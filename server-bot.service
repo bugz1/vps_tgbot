@@ -1,0 +1,15 @@
+[Unit]
+Description=Telegram Server Bot
+After=network.target
+
+[Service]
+Type=simple
+User=telegram-bot
+Group=telegram-bot
+ExecStart=/usr/local/bin/server-bot
+WorkingDirectory=/opt/telegram-bot
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

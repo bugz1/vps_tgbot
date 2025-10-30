@@ -1,0 +1,13 @@
+bot:
+  token: "7725781489:AAGrXfPzK1qX8yQ1yQ1yQ1yQ1yQ1yQ1yQ1yQ"  # Замените на ваш токен
+  allowed_chats: [123456789]  # Замените на ваш ID чата
+  update_timeout: 60
+
+monitoring:
+  check_interval: 30
+  cpu_threshold: 90
+  disk_threshold: 10
+
+docker:
+  socket: "/var/run/docker.sock"
+  timeout: 30
