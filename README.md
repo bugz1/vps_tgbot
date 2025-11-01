@@ -14,6 +14,7 @@ Telegram бот для мониторинга и управления Linux се
 - Список контейнеров с интерактивным меню
 - Действия: start, stop, restart
 - Просмотр логов контейнеров
+- Получение статуса контейнера
 
 ### Управление системой
 - Перезагрузка сервера (с подтверждением)
@@ -21,95 +22,62 @@ Telegram бот для мониторинга и управления Linux се
 - Проверка доступных обновлений системы
 - Обновление системы
 
+### Управление сервисами
+- Просмотр списка systemd сервисов (активные/неактивные)
+- Управление сервисами: start, stop, restart
+- Получение статуса сервиса
+
 ### Мониторинг и уведомления
 - Мониторинг системных метрик (CPU, RAM, диск)
 - Уведомления о достижении пороговых значений
 - Настройка пороговых значений в конфигурации
+
+## Сборка проекта
+
+### Использование скрипта сборки
+
+Для сборки проекта под разные архитектуры используйте скрипт `build.sh`:
+
+```bash
+./build.sh
+```
+
+Скрипт создаст бинарные файлы в директории `releases/` для следующих архитектур:
+- Linux AMD64
+
+### Ручная сборка
+
+Вы также можете собрать проект вручную для нужной архитектуры:
+
+```bash
+# Для Linux AMD64
+GOOS=linux GOARCH=amd64 go build -o server-bot ./cmd/bot
+```
+
 ## Установка
 
 ### Вариант 1: Использование скрипта установки
 
-1. Запустите скрипт установки:
+1. Соберите проект (если еще не собран):
+   ```bash
+   ./build.sh
+   ```
+
+2. Запустите скрипт установки:
    ```bash
    sudo ./install.sh
    ```
-2. Отредактируйте `/opt/telegram-bot/config.yaml`, указав ваши параметры
-3. Запустите сервис:
+
+3. Отредактируйте `/opt/telegram-bot/config.yaml`, указав ваши параметры
+
+4. Запустите сервис:
    ```bash
    sudo systemctl start server-bot.service
    ```
 
-## Установка
+### Вариант 2: Ручная установка
 
-
-### Вариант 1: Использование готового бинарного файла
-
-1. Скачайте архив `server-bot-linux-amd64.tar.gz`
-2. Распакуйте архив:
-   ```bash
-   tar -xzf server-bot-linux-amd64.tar.gz
-   ```
-3. Отредактируйте `config.yaml.example`, указав ваши параметры, и переименуйте в `config.yaml`
-4. Следуйте инструкциям по настройке systemd из раздела "Настройка systemd"
-
-### Вариант 2: Сборка из исходного кода
-
-1. Клонируйте репозиторий:
-   ```bash
-   git clone <repository-url>
-   cd tgbot
-   ```
-
-2. Создайте файл конфигурации `config.yaml` на основе примера:
-   ```bash
-   cp config.yaml.example config.yaml
-   ```
-   Затем отредактируйте `config.yaml`, указав ваши параметры.
-3. Соберите проект для разных архитектур:
-   ```bash
-   ./build.sh
-   ```
-   Или соберите вручную для нужной архитектуры:
-   ```bash
-   GOOS=linux GOARCH=amd64 go build -o server-bot ./cmd/bot
-   ```
-
-
-4. Создайте пользователя для запуска бота:
-   ```bash
-   sudo useradd -r -s /bin/false telegram-bot
-   ```
-
-5. Добавьте пользователя в группу docker:
-   ```bash
-   sudo usermod -aG docker telegram-bot
-   ```
-
-6. Скопируйте бинарный файл и конфигурацию в системную директорию:
-   ```bash
-   sudo mkdir -p /opt/telegram-bot
-   sudo cp server-bot /opt/telegram-bot/
-   sudo cp config.yaml /opt/telegram-bot/
-   sudo chown -R telegram-bot:telegram-bot /opt/telegram-bot
-   ```
-
-7. Скопируйте systemd service файл:
-   ```bash
-   sudo cp server-bot.service /etc/systemd/system/
-   ```
-
-8. Запустите службу:
-   ```bash
-   sudo systemctl daemon-reload
-   sudo systemctl enable server-bot
-   sudo systemctl start server-bot
-   ```
-
-## Настройка systemd
-
-Для запуска бота как службы systemd:
-
-1. Создайте пользователя для запуска бота (если еще не создан):
+1. Создайте пользователя для запуска бота:
    ```bash
    sudo useradd -r -s /bin/false telegram-bot
    ```
@@ -119,25 +87,57 @@ Telegram бот для мониторинга и управления Linux се
    sudo usermod -aG docker telegram-bot
    ```
 
-3. Скопируйте бинарный файл и конфигурацию в системную директорию:
+3. Соберите проект или скачайте готовый бинарный файл
+
+4. Скопируйте бинарный файл и конфигурацию в системную директорию:
    ```bash
    sudo mkdir -p /opt/telegram-bot
-   sudo cp server-bot /opt/telegram-bot/
-   sudo cp config.yaml /opt/telegram-bot/
+   sudo cp server-bot /usr/local/bin/server-bot
+   sudo cp config-server.yaml /opt/telegram-bot/config.yaml
    sudo chown -R telegram-bot:telegram-bot /opt/telegram-bot
+   sudo chmod +x /usr/local/bin/server-bot
    ```
 
-4. Скопируйте systemd service файл:
+5. Скопируйте systemd service файл:
    ```bash
    sudo cp server-bot.service /etc/systemd/system/
    ```
 
-5. Запустите службу:
+6. Перезагрузите systemd и запустите службу:
    ```bash
    sudo systemctl daemon-reload
    sudo systemctl enable server-bot
    sudo systemctl start server-bot
    ```
+
+## Развертывание
+
+Для развертывания бота на сервере используйте скрипт `deploy.sh`:
+
+```bash
+./deploy.sh
+```
+
+Скрипт автоматически:
+- Остановит службу бота на сервере
+- Скопирует новый бинарный файл на сервер
+- Установит права на выполнение
+- Запустит службу бота
+- Проверит статус службы
+
+Перед запуском скрипта убедитесь, что:
+- У вас есть SSH-ключ для подключения к серверу
+- Сервер доступен по указанному IP-адресу
+- У вас есть права sudo на сервере
+
+Параметры подключения к серверу можно изменить в самом скрипте:
+```bash
+SERVER_IP="bugz1.online"     # IP-адрес сервера
+SSH_USER="root"              # Пользователь SSH
+SSH_KEY="$HOME/.ssh/id_ed25519"  # Путь к SSH-ключу
+REMOTE_PATH="/opt/telegram-bot"  # Путь на сервере
+SERVICE_NAME="server-bot"    # Имя службы
+```
 
 ## Пример конфигурационного файла
 
@@ -163,6 +163,7 @@ docker:
 - Linux сервер с Docker
 - Go 1.19+ (для сборки)
 - Доступ к Telegram API
+- systemd (для запуска как службы)
 
 ## Безопасность
 

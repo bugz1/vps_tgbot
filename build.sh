@@ -11,7 +11,6 @@ mkdir -p releases
 
 # Сборка для Linux AMD64
 echo "Сборка для Linux AMD64..."
-GOOS=linux GOARCH=amd64 go build -o releases/server-bot cmd/bot/main.go
-tar -czf releases/server-bot-linux-amd64.tar.gz -C releases server-bot
+GOOS=linux GOARCH=amd64 go build -o releases/server-bot-linux-amd64 cmd/bot/main.go
 
 echo "Сборка завершена! Файлы находятся в директории releases."

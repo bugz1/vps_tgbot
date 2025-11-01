@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"os/exec"
+	"sort"
 	"strings"
 
 	"github.com/godbus/dbus/v5"
@@ -229,8 +230,15 @@ func (m *Monitor) UpgradeSystem() error {
 	return cmd.Run()
 }
 
-// GetServices получает список запущенных systemd сервисов через D-Bus
-func (m *Monitor) GetServices() ([]string, error) {
+// ServiceStatus представляет информацию о сервисе с цветовым индикатором статуса
+type ServiceStatus struct {
+	Name   string
+	Status string // "active" или "inactive"
+	Emoji  string // 🟩 для активных, 🟥 для неактивных
+}
+
+// GetServices получает список systemd сервисов с их статусами через D-Bus
+func (m *Monitor) GetServices() ([]ServiceStatus, error) {
 	// Подключаемся к системной шине D-Bus
 	conn, err := dbus.SystemBus()
 	if err != nil {
@@ -261,23 +269,41 @@ func (m *Monitor) GetServices() ([]string, error) {
 		return m.getServicesFallback()
 	}
 
-	// Фильтруем только запущенные сервисы
-	var services []string
+	// Фильтруем сервисы и добавляем информацию о статусе
+	var services []ServiceStatus
 	for _, unit := range units {
-		// Проверяем, что это сервис и он активен
-		if strings.HasSuffix(unit.Name, ".service") && unit.ActiveState == "active" {
+		// Проверяем, что это сервис
+		if strings.HasSuffix(unit.Name, ".service") {
 			// Удаляем суффикс .service из имени
 			serviceName := strings.TrimSuffix(unit.Name, ".service")
-			services = append(services, serviceName)
+
+			// Определяем эмодзи в зависимости от статуса
+			var emoji string
+			if unit.ActiveState == "active" {
+				emoji = "🟩"
+			} else {
+				emoji = "🟥"
+			}
+
+			services = append(services, ServiceStatus{
+				Name:   serviceName,
+				Status: unit.ActiveState,
+				Emoji:  emoji,
+			})
 		}
 	}
+
+	// Сортируем сервисы по имени в алфавитном порядке
+	sort.Slice(services, func(i, j int) bool {
+		return services[i].Name < services[j].Name
+	})
 
 	return services, nil
 }
 
 // getServicesFallback получает список сервисов через вызов systemctl (fallback метод)
-func (m *Monitor) getServicesFallback() ([]string, error) {
-	cmd := exec.Command("sudo", "systemctl", "list-units", "--type=service", "--state=running", "--no-pager")
+func (m *Monitor) getServicesFallback() ([]ServiceStatus, error) {
+	cmd := exec.Command("sudo", "systemctl", "list-units", "--type=service", "--no-pager")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("ошибка выполнения команды systemctl: %v", err)
@@ -288,21 +314,124 @@ func (m *Monitor) getServicesFallback() ([]string, error) {
 }
 
 // parseServicesOutput парсит вывод команды systemctl
-func (m *Monitor) parseServicesOutput(output string) []string {
+func (m *Monitor) parseServicesOutput(output string) []ServiceStatus {
 	lines := strings.Split(output, "\n")
-	var services []string
+	var services []ServiceStatus
 
 	// Пропускаем заголовки и пустые строки
 	for _, line := range lines {
 		if strings.Contains(line, ".service") && !strings.HasPrefix(line, "UNIT") && strings.TrimSpace(line) != "" {
-			// Извлекаем имя сервиса из строки
+			// Извлекаем имя сервиса и статус из строки
 			fields := strings.Fields(line)
-			if len(fields) > 0 {
+			if len(fields) >= 4 {
 				serviceName := strings.TrimSuffix(fields[0], ".service")
-				services = append(services, serviceName)
+				status := fields[3] // Статус обычно в 4-й колонке
+
+				// Определяем эмодзи в зависимости от статуса
+				var emoji string
+				if status == "active" || status == "running" {
+					emoji = "🟩"
+				} else {
+					emoji = "🟥"
+				}
+
+				services = append(services, ServiceStatus{
+					Name:   serviceName,
+					Status: status,
+					Emoji:  emoji,
+				})
 			}
 		}
 	}
 
+	// Сортируем сервисы по имени в алфавитном порядке
+	sort.Slice(services, func(i, j int) bool {
+		return services[i].Name < services[j].Name
+	})
+
 	return services
+}
+
+// GetServiceStatus получает статус конкретного systemd сервиса
+func (m *Monitor) GetServiceStatus(serviceName string) (ServiceStatus, error) {
+	// Подключаемся к системной шине D-Bus
+	conn, err := dbus.SystemBus()
+	if err != nil {
+		// Если не удалось подключиться к D-Bus, используем fallback метод
+		return m.getServiceStatusFallback(serviceName)
+	}
+	defer conn.Close()
+
+	// Получаем объект менеджера systemd
+	obj := conn.Object("org.freedesktop.systemd1", "/org/freedesktop/systemd1")
+
+	// Вызываем метод GetUnit для получения пути к юниту
+	var unitPath dbus.ObjectPath
+	err = obj.Call("org.freedesktop.systemd1.Manager.GetUnit", 0, serviceName+".service").Store(&unitPath)
+	if err != nil {
+		// Если не удалось получить юнит через D-Bus, используем fallback метод
+		return m.getServiceStatusFallback(serviceName)
+	}
+
+	// Получаем объект юнита
+	unitObj := conn.Object("org.freedesktop.systemd1", unitPath)
+
+	// Получаем свойство ActiveState
+	activeStateVariant, err := unitObj.GetProperty("org.freedesktop.systemd1.Unit.ActiveState")
+	if err != nil {
+		// Если не удалось получить свойство через D-Bus, используем fallback метод
+		return m.getServiceStatusFallback(serviceName)
+	}
+
+	activeState, ok := activeStateVariant.Value().(string)
+	if !ok {
+		// Если не удалось преобразовать значение, используем fallback метод
+		return m.getServiceStatusFallback(serviceName)
+	}
+
+	// Определяем эмодзи в зависимости от статуса
+	var emoji string
+	if activeState == "active" {
+		emoji = "🟩"
+	} else {
+		emoji = "🟥"
+	}
+
+	return ServiceStatus{
+		Name:   serviceName,
+		Status: activeState,
+		Emoji:  emoji,
+	}, nil
+}
+
+// getServiceStatusFallback получает статус конкретного сервиса через вызов systemctl (fallback метод)
+func (m *Monitor) getServiceStatusFallback(serviceName string) (ServiceStatus, error) {
+	cmd := exec.Command("sudo", "systemctl", "is-active", serviceName+".service")
+	output, err := cmd.Output()
+
+	// Если команда завершилась с ошибкой, это может означать, что сервис не активен
+	status := strings.TrimSpace(string(output))
+	if err != nil {
+		// Проверяем, является ли ошибка результатом неактивного сервиса
+		if status == "inactive" || status == "failed" {
+			// Это нормальное состояние сервиса, не ошибка
+		} else {
+			// Это реальная ошибка
+			return ServiceStatus{}, fmt.Errorf("ошибка выполнения команды systemctl: %v", err)
+		}
+	}
+
+	// Определяем эмодзи в зависимости от статуса
+	var emoji string
+	if status == "active" {
+		emoji = "🟩"
+	} else {
+		emoji = "🟥"
+	}
+
+	return ServiceStatus{
+		Name:   serviceName,
+		Status: status,
+		Emoji:  emoji,
+	}, nil
 }

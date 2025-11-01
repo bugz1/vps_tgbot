@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"os/exec"
+	"sort"
 	"strings"
 
 	"tgbot/internal/services/docker"
@@ -314,23 +315,45 @@ func (h *CommandHandler) handleCallbackQuery(update tgbotapi.Update) {
 		// Получение имени сервиса
 		serviceName := strings.TrimPrefix(data, "service:")
 
-		// Создание inline клавиатуры с действиями для сервиса
-		keyboard := tgbotapi.NewInlineKeyboardMarkup(
-			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("🔄 Restart", "restart_service:"+serviceName),
-				tgbotapi.NewInlineKeyboardButtonData("🟥 Stop", "stop_service:"+serviceName),
-			),
-			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("🟩 Start", "start_service:"+serviceName),
-				tgbotapi.NewInlineKeyboardButtonData("📊 Status", "status_service:"+serviceName),
-			),
-			tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData("⬅️ Back", "services"),
-			),
-		)
+		// Получение статуса сервиса
+		serviceStatus, err := h.systemService.GetServiceStatus(serviceName)
+		if err != nil {
+			message := fmt.Sprintf("❌ Ошибка получения статуса сервиса %s: %v", serviceName, err)
+			msg := tgbotapi.NewMessage(callback.Message.Chat.ID, message)
+			h.bot.Send(msg)
+			return
+		}
+
+		// Создание inline клавиатуры с действиями для сервиса в зависимости от его статуса
+		var keyboard tgbotapi.InlineKeyboardMarkup
+		if serviceStatus.Status == "active" {
+			// Для активных сервисов показываем Restart и Stop
+			keyboard = tgbotapi.NewInlineKeyboardMarkup(
+				tgbotapi.NewInlineKeyboardRow(
+					tgbotapi.NewInlineKeyboardButtonData("🔄 Restart", "restart_service:"+serviceName),
+					tgbotapi.NewInlineKeyboardButtonData("🟥 Stop", "stop_service:"+serviceName),
+				),
+				tgbotapi.NewInlineKeyboardRow(
+					tgbotapi.NewInlineKeyboardButtonData("📊 Status", "status_service:"+serviceName),
+					tgbotapi.NewInlineKeyboardButtonData("⬅️ Back", "services"),
+				),
+			)
+		} else {
+			// Для неактивных сервисов показываем Start
+			keyboard = tgbotapi.NewInlineKeyboardMarkup(
+				tgbotapi.NewInlineKeyboardRow(
+					tgbotapi.NewInlineKeyboardButtonData("🟩 Start", "start_service:"+serviceName),
+					tgbotapi.NewInlineKeyboardButtonData("🔄 Restart", "restart_service:"+serviceName),
+				),
+				tgbotapi.NewInlineKeyboardRow(
+					tgbotapi.NewInlineKeyboardButtonData("📊 Status", "status_service:"+serviceName),
+					tgbotapi.NewInlineKeyboardButtonData("⬅️ Back", "services"),
+				),
+			)
+		}
 
 		// Отправка сообщения с клавиатурой действий
-		message := fmt.Sprintf("Выберите действие для сервиса *%s*:", serviceName)
+		message := fmt.Sprintf("Выберите действие для сервиса *%s* (%s):", serviceName, serviceStatus.Status)
 		msg := tgbotapi.NewMessage(callback.Message.Chat.ID, message)
 		msg.ParseMode = "Markdown"
 		msg.ReplyMarkup = keyboard
@@ -493,6 +516,150 @@ func (h *CommandHandler) handleCallbackQuery(update tgbotapi.Update) {
 			h.bot.Send(msg)
 		}
 	}
+
+	// Добавляем обработку новых callback-запросов для сервисов
+	switch data {
+	case "services_active":
+		h.handleServicesActive(callback)
+	case "services_inactive":
+		h.handleServicesInactive(callback)
+	case "status":
+		// Создаем фиктивный update для вызова handleStatus
+		fakeUpdate := tgbotapi.Update{
+			Message: &tgbotapi.Message{
+				Chat: callback.Message.Chat,
+			},
+		}
+		h.handleStatus(fakeUpdate)
+	case "containers":
+		// Создаем фиктивный update для вызова handleContainers
+		fakeUpdate := tgbotapi.Update{
+			Message: &tgbotapi.Message{
+				Chat: callback.Message.Chat,
+			},
+		}
+		h.handleContainers(fakeUpdate)
+	case "services":
+		// Показываем список сервисов
+		h.handleServices(callback)
+	case "server_management":
+		// Показываем меню управления сервером
+		h.handleServerManagement(callback)
+	case "reboot":
+		// Создаем фиктивный update для вызова handleReboot
+		fakeUpdate := tgbotapi.Update{
+			Message: &tgbotapi.Message{
+				Chat: callback.Message.Chat,
+			},
+		}
+		h.handleReboot(fakeUpdate)
+	case "shutdown":
+		// Создаем фиктивный update для вызова handleShutdown
+		fakeUpdate := tgbotapi.Update{
+			Message: &tgbotapi.Message{
+				Chat: callback.Message.Chat,
+			},
+		}
+		h.handleShutdown(fakeUpdate)
+	case "back_to_main":
+		// Создаем фиктивный update для вызова handleStart
+		fakeUpdate := tgbotapi.Update{
+			Message: &tgbotapi.Message{
+				Chat: callback.Message.Chat,
+			},
+		}
+		h.handleStart(fakeUpdate)
+	case "confirm_reboot":
+		// Выполняем перезагрузку сервера
+		err := h.systemService.Reboot()
+		if err != nil {
+			message := fmt.Sprintf("❌ Ошибка перезагрузки сервера: %v", err)
+			msg := tgbotapi.NewMessage(callback.Message.Chat.ID, message)
+			h.bot.Send(msg)
+		} else {
+			message := "🔄 Сервер перезагружается..."
+			msg := tgbotapi.NewMessage(callback.Message.Chat.ID, message)
+			h.bot.Send(msg)
+		}
+	case "confirm_shutdown":
+		// Выполняем выключение сервера
+		err := h.systemService.Shutdown()
+		if err != nil {
+			message := fmt.Sprintf("❌ Ошибка выключения сервера: %v", err)
+			msg := tgbotapi.NewMessage(callback.Message.Chat.ID, message)
+			h.bot.Send(msg)
+		} else {
+			message := "🔌 Сервер выключается..."
+			msg := tgbotapi.NewMessage(callback.Message.Chat.ID, message)
+			h.bot.Send(msg)
+		}
+	case "check_updates":
+		// Проверка обновлений системы
+		message := "🔍 Проверяю доступные обновления..."
+		msg := tgbotapi.NewMessage(callback.Message.Chat.ID, message)
+		h.bot.Send(msg)
+
+		// Выполняем проверку обновлений
+		updates, err := h.systemService.CheckUpdates()
+		if err != nil {
+			message = fmt.Sprintf("❌ Ошибка проверки обновлений: %v", err)
+			msg = tgbotapi.NewMessage(callback.Message.Chat.ID, message)
+			h.bot.Send(msg)
+		} else {
+			// Проверяем, есть ли реальные пакеты для обновления
+			lines := strings.Split(updates, "\n")
+			packageCount := 0
+
+			// Подсчитываем количество строк с реальными пакетами (исключая заголовок и пустые строки)
+			for _, line := range lines {
+				if strings.Contains(line, "/") && !strings.HasPrefix(line, "Listing...") {
+					packageCount++
+				}
+			}
+
+			if packageCount == 0 {
+				// Если обновлений нет, выводим сообщение и возвращаем к основному меню
+				message = "✅ Все обновления установлены!"
+				msg = tgbotapi.NewMessage(callback.Message.Chat.ID, message)
+				h.bot.Send(msg)
+
+				// Создаем фиктивный update для возврата к основному меню
+				fakeUpdate := tgbotapi.Update{
+					Message: &tgbotapi.Message{
+						Chat: callback.Message.Chat,
+						Text: "/start",
+					},
+				}
+				h.handleStart(fakeUpdate)
+			} else {
+				// Если есть обновления, показываем их
+				// Ограничиваем вывод до 2000 символов
+				if len(updates) > 2000 {
+					updates = updates[:2000] + "\n... (вывод обрезан)"
+				}
+				message = fmt.Sprintf("🔍 *Доступные обновления:*\n```\n%s\n```", updates)
+				msg = tgbotapi.NewMessage(callback.Message.Chat.ID, message)
+				msg.ParseMode = "Markdown"
+				h.bot.Send(msg)
+			}
+		}
+	case "upgrade_system":
+		// Обновление системы
+		message := "⬆️ Начинаю обновление системы..."
+		msg := tgbotapi.NewMessage(callback.Message.Chat.ID, message)
+		h.bot.Send(msg)
+
+		// Выполняем обновление системы
+		err := h.systemService.UpgradeSystem()
+		if err != nil {
+			message = fmt.Sprintf("❌ Ошибка обновления системы: %v", err)
+		} else {
+			message = "✅ Система успешно обновлена!"
+		}
+
+		msg = tgbotapi.NewMessage(callback.Message.Chat.ID, message)
+		h.bot.Send(msg)
+	}
 }
 
 // handleServerManagement показывает меню управления сервером
@@ -535,21 +702,33 @@ func (h *CommandHandler) handleServices(callback *tgbotapi.CallbackQuery) {
 		return
 	}
 
-	// Создание inline клавиатуры с сервисами
+	// Разделяем сервисы на активные и неактивные
+	var activeServices, inactiveServices []system.ServiceStatus
+	for _, service := range services {
+		if service.Status == "active" {
+			activeServices = append(activeServices, service)
+		} else {
+			inactiveServices = append(inactiveServices, service)
+		}
+	}
+
+	// Создание inline клавиатуры с подменю
 	var keyboard tgbotapi.InlineKeyboardMarkup
 	buttons := make([][]tgbotapi.InlineKeyboardButton, 0)
 
-	// Добавляем кнопки для каждого сервиса (ограничим до 30 для удобства)
-	limit := len(services)
-	if limit > 30 {
-		limit = 30
+	// Добавляем кнопки для подменю
+	if len(activeServices) > 0 {
+		button := tgbotapi.NewInlineKeyboardButtonData(
+			fmt.Sprintf("✅ Активные (%d)", len(activeServices)),
+			"services_active",
+		)
+		buttons = append(buttons, tgbotapi.NewInlineKeyboardRow(button))
 	}
 
-	for i := 0; i < limit; i++ {
-		service := services[i]
+	if len(inactiveServices) > 0 {
 		button := tgbotapi.NewInlineKeyboardButtonData(
-			service.Status,                          // Используем статус с цветовым индикатором
-			fmt.Sprintf("service:%s", service.Name), // Используем имя для callback
+			fmt.Sprintf("❌ Неактивные (%d)", len(inactiveServices)),
+			"services_inactive",
 		)
 		buttons = append(buttons, tgbotapi.NewInlineKeyboardRow(button))
 	}
@@ -561,12 +740,22 @@ func (h *CommandHandler) handleServices(callback *tgbotapi.CallbackQuery) {
 
 	keyboard = tgbotapi.NewInlineKeyboardMarkup(buttons...)
 
-	message := "⚙️ *Сервисы системы*\n\nСписок сервисов с индикаторами статуса:\n🟩 - активный\n🟥 - неактивный\n\nВыберите сервис для управления:"
+	message := "⚙️ *Сервисы системы*\n\nВыберите категорию сервисов:"
 	editMsg := tgbotapi.NewEditMessageText(callback.Message.Chat.ID, callback.Message.MessageID, message)
 	editMsg.ParseMode = "Markdown"
 	editMsg.ReplyMarkup = &keyboard
 
 	h.bot.Send(editMsg)
+}
+
+// handleServicesActive показывает список активных systemd сервисов
+func (h *CommandHandler) handleServicesActive(callback *tgbotapi.CallbackQuery) {
+	h.showServicesList(callback, true)
+}
+
+// handleServicesInactive показывает список неактивных systemd сервисов
+func (h *CommandHandler) handleServicesInactive(callback *tgbotapi.CallbackQuery) {
+	h.showServicesList(callback, false)
 }
 
 // createBackKeyboard создает клавиатуру с кнопкой "Назад"
@@ -687,4 +876,80 @@ func (h *CommandHandler) handleUnknown(update tgbotapi.Update) {
 
 	msg := tgbotapi.NewMessage(update.Message.Chat.ID, message)
 	h.bot.Send(msg)
+}
+
+// getFilteredAndSortedServices получает список сервисов, фильтрует их по статусу и сортирует по имени
+func (h *CommandHandler) getFilteredAndSortedServices(active bool) ([]system.ServiceStatus, error) {
+	// Получение списка сервисов
+	services, err := h.systemService.GetServices()
+	if err != nil {
+		return nil, err
+	}
+
+	// Фильтруем сервисы по статусу
+	var filteredServices []system.ServiceStatus
+	for _, service := range services {
+		if (active && service.Status == "active") || (!active && service.Status != "active") {
+			filteredServices = append(filteredServices, service)
+		}
+	}
+
+	// Сортируем сервисы по имени в алфавитном порядке
+	sort.Slice(filteredServices, func(i, j int) bool {
+		return filteredServices[i].Name < filteredServices[j].Name
+	})
+
+	return filteredServices, nil
+}
+
+// showServicesList показывает список сервисов с заданным статусом
+func (h *CommandHandler) showServicesList(callback *tgbotapi.CallbackQuery, active bool) {
+	// Получение отфильтрованного и отсортированного списка сервисов
+	services, err := h.getFilteredAndSortedServices(active)
+	if err != nil {
+		message := fmt.Sprintf("❌ Ошибка получения списка сервисов: %v", err)
+		editMsg := tgbotapi.NewEditMessageText(callback.Message.Chat.ID, callback.Message.MessageID, message)
+		h.bot.Send(editMsg)
+		return
+	}
+
+	// Создание inline клавиатуры с сервисами
+	var keyboard tgbotapi.InlineKeyboardMarkup
+	buttons := make([][]tgbotapi.InlineKeyboardButton, 0)
+
+	// Добавляем кнопки для каждого сервиса (ограничим до 30 для удобства)
+	limit := len(services)
+	if limit > 30 {
+		limit = 30
+	}
+
+	for i := 0; i < limit; i++ {
+		service := services[i]
+		button := tgbotapi.NewInlineKeyboardButtonData(
+			fmt.Sprintf("%s %s", service.Emoji, service.Name), // Используем эмодзи и имя сервиса
+			fmt.Sprintf("service:%s", service.Name),           // Используем имя для callback
+		)
+		buttons = append(buttons, tgbotapi.NewInlineKeyboardRow(button))
+	}
+
+	// Добавляем кнопку "Назад"
+	buttons = append(buttons, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад", "services"),
+	))
+
+	keyboard = tgbotapi.NewInlineKeyboardMarkup(buttons...)
+
+	// Формируем сообщение в зависимости от статуса сервисов
+	var message string
+	if active {
+		message = fmt.Sprintf("✅ *Активные сервисы* (%d)\n\nВыберите сервис для управления:", len(services))
+	} else {
+		message = fmt.Sprintf("❌ *Неактивные сервисы* (%d)\n\nВыберите сервис для управления:", len(services))
+	}
+
+	editMsg := tgbotapi.NewEditMessageText(callback.Message.Chat.ID, callback.Message.MessageID, message)
+	editMsg.ParseMode = "Markdown"
+	editMsg.ReplyMarkup = &keyboard
+
+	h.bot.Send(editMsg)
 }
