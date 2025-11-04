@@ -172,3 +172,21 @@ func (m *Manager) GetContainerStatus(id string) (string, error) {
 
 	return status, nil
 }
+
+// ReadFileFromContainer читает файл из контейнера
+func (m *Manager) ReadFileFromContainer(containerName, filePath string) (string, error) {
+	return m.ExecuteCommandInContainer(containerName, "cat", filePath)
+}
+
+// ExecuteCommandInContainer выполняет команду в контейнере
+func (m *Manager) ExecuteCommandInContainer(containerName string, command ...string) (string, error) {
+	// Формируем полную команду с префиксом docker exec
+	args := append([]string{"docker", "exec", containerName}, command...)
+	cmd := exec.Command("sudo", args...)
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("ошибка выполнения команды в контейнере %s: %v", containerName, err)
+	}
+
+	return string(output), nil
+}

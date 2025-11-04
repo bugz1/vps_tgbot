@@ -1,3 +1,6 @@
+# MacOS
+.DS_Store
+
 # Binaries for programs and plugins
 *.exe
 *.exe~
@@ -26,7 +29,11 @@ go.work
 config.yaml
 todo.md
 deploy.sh
-config.yaml.example
 
 # Build outputs
 releases/
+
+# Debug files
+debug/
+x/
+cmd/debug_amnezia/

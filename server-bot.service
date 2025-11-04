@@ -4,12 +4,13 @@ After=network.target
 
 [Service]
 Type=simple
-User=telegram-bot
-Group=telegram-bot
+User=root
+Group=root
 ExecStart=/usr/local/bin/server-bot
 WorkingDirectory=/opt/telegram-bot
 Restart=always
 RestartSec=10
+Environment=CONFIG_PATH=/etc/server-bot.yaml
 
 [Install]
 WantedBy=multi-user.target

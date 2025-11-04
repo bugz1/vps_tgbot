@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"tgbot/internal/services/amnezia"
 	"tgbot/internal/services/docker"
 	"tgbot/internal/services/system"
 
@@ -14,17 +15,28 @@ import (
 
 // CommandHandler обработчик команд
 type CommandHandler struct {
-	bot           *tgbotapi.BotAPI
-	systemService *system.Monitor
-	dockerService *docker.Manager
+	bot            *tgbotapi.BotAPI
+	systemService  *system.Monitor
+	dockerService  *docker.Manager
+	amneziaService *amnezia.Service
+	// Храним состояние ожидания ввода от пользователя
+	pendingInputs map[int64]PendingInput
+}
+
+// PendingInput структура для хранения информации о pending input
+type PendingInput struct {
+	Action string
+	Data   map[string]string
 }
 
 // NewCommandHandler создает новый обработчик команд
-func NewCommandHandler(bot *tgbotapi.BotAPI, systemService *system.Monitor, dockerService *docker.Manager) *CommandHandler {
+func NewCommandHandler(bot *tgbotapi.BotAPI, systemService *system.Monitor, dockerService *docker.Manager, amneziaService *amnezia.Service) *CommandHandler {
 	return &CommandHandler{
-		bot:           bot,
-		systemService: systemService,
-		dockerService: dockerService,
+		bot:            bot,
+		systemService:  systemService,
+		dockerService:  dockerService,
+		amneziaService: amneziaService,
+		pendingInputs:  make(map[int64]PendingInput),
 	}
 }
 
@@ -33,31 +45,52 @@ func (h *CommandHandler) HandleCommand(update tgbotapi.Update) {
 	if update.Message != nil {
 		// Получение текста команды
 		command := strings.TrimSpace(update.Message.Text)
+		chatID := update.Message.Chat.ID
 
-		// Обработка команды
-		switch {
-		case command == "/start":
-			h.handleStart(update)
-		case command == "/status":
-			h.handleStatus(update)
-		case command == "/cpu":
-			h.handleCPU(update)
-		case command == "/ram":
-			h.handleRAM(update)
-		case command == "/hdd":
-			h.handleHDD(update)
-		case command == "/containers":
-			h.handleContainers(update)
-		case command == "/reboot":
-			h.handleReboot(update)
-		case command == "/shutdown":
-			h.handleShutdown(update)
-		default:
-			h.handleUnknown(update)
+		// Проверяем, есть ли ожидание ввода от пользователя
+		if pendingInput, exists := h.pendingInputs[chatID]; exists {
+			// Обрабатываем ввод пользователя в зависимости от ожидаемого действия
+			switch pendingInput.Action {
+			case "create_wireguard_client":
+				h.handleCreateWireGuardClientInput(update, pendingInput)
+			default:
+				// Если действие не определено, удаляем pending input и обрабатываем как обычную команду
+				delete(h.pendingInputs, chatID)
+				h.handleRegularCommand(update, command)
+			}
+			return
 		}
+
+		// Обработка обычных команд
+		h.handleRegularCommand(update, command)
 	} else if update.CallbackQuery != nil {
 		// Обработка callback-запросов
 		h.handleCallbackQuery(update)
+	}
+}
+
+// handleRegularCommand обрабатывает обычные команды
+func (h *CommandHandler) handleRegularCommand(update tgbotapi.Update, command string) {
+	// Обработка команды
+	switch {
+	case command == "/start":
+		h.handleStart(update)
+	case command == "/status":
+		h.handleStatus(update)
+	case command == "/cpu":
+		h.handleCPU(update)
+	case command == "/ram":
+		h.handleRAM(update)
+	case command == "/hdd":
+		h.handleHDD(update)
+	case command == "/containers":
+		h.handleContainers(update)
+	case command == "/reboot":
+		h.handleReboot(update)
+	case command == "/shutdown":
+		h.handleShutdown(update)
+	default:
+		h.handleUnknown(update)
 	}
 }
 
@@ -70,6 +103,9 @@ func (h *CommandHandler) handleStart(update tgbotapi.Update) {
 		),
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("🐳 Контейнеры", "containers"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🛡️ Amnezia VPN", "amnezia_vpn"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("⚙️ Сервисы", "services"),
@@ -104,11 +140,7 @@ func (h *CommandHandler) handleStatus(update tgbotapi.Update) {
 
 `, cpuInfo, memInfo, diskInfo)
 
-	msg := tgbotapi.NewMessage(update.Message.Chat.ID, message)
-	msg.ParseMode = "Markdown"
-	msg.ReplyMarkup = h.createBackKeyboard()
-
-	h.bot.Send(msg)
+	h.sendSimpleMessage(update.Message.Chat.ID, message)
 }
 
 // handleCPU обрабатывает команду /cpu
@@ -121,11 +153,7 @@ func (h *CommandHandler) handleCPU(update tgbotapi.Update) {
 %s
 `, cpuInfo)
 
-	msg := tgbotapi.NewMessage(update.Message.Chat.ID, message)
-	msg.ParseMode = "Markdown"
-	msg.ReplyMarkup = h.createBackKeyboard()
-
-	h.bot.Send(msg)
+	h.sendSimpleMessage(update.Message.Chat.ID, message)
 }
 
 // handleRAM обрабатывает команду /ram
@@ -138,11 +166,7 @@ func (h *CommandHandler) handleRAM(update tgbotapi.Update) {
 %s
 `, memInfo)
 
-	msg := tgbotapi.NewMessage(update.Message.Chat.ID, message)
-	msg.ParseMode = "Markdown"
-	msg.ReplyMarkup = h.createBackKeyboard()
-
-	h.bot.Send(msg)
+	h.sendSimpleMessage(update.Message.Chat.ID, message)
 }
 
 // handleHDD обрабатывает команду /hdd
@@ -155,11 +179,7 @@ func (h *CommandHandler) handleHDD(update tgbotapi.Update) {
 %s
 `, diskInfo)
 
-	msg := tgbotapi.NewMessage(update.Message.Chat.ID, message)
-	msg.ParseMode = "Markdown"
-	msg.ReplyMarkup = h.createBackKeyboard()
-
-	h.bot.Send(msg)
+	h.sendSimpleMessage(update.Message.Chat.ID, message)
 }
 
 // handleContainers обрабатывает команду /containers
@@ -255,7 +275,13 @@ func (h *CommandHandler) handleCallbackQuery(update tgbotapi.Update) {
 	h.bot.AnswerCallbackQuery(callbackResponse)
 
 	// Обработка данных callback запроса
-	if strings.HasPrefix(data, "container:") {
+	// Навигация по меню:
+	// 1. Главное меню -> подменю -> действия -> Назад (возврат на уровень выше)
+	// 2. Кнопка "Назад" всегда возвращает на один уровень вверх в иерархии меню
+	if data == "amnezia_vpn" {
+		// Показываем меню управления Amnezia VPN
+		h.handleAmneziaVPNMenu(callback)
+	} else if strings.HasPrefix(data, "container:") {
 		// Получение ID контейнера
 		containerID := strings.TrimPrefix(data, "container:")
 
@@ -284,12 +310,7 @@ func (h *CommandHandler) handleCallbackQuery(update tgbotapi.Update) {
 	} else if data == "back" {
 		// Возврат к списку контейнеров
 		// Создаем фиктивный update для повторного вызова handleContainers
-		fakeUpdate := tgbotapi.Update{
-			Message: &tgbotapi.Message{
-				Chat: callback.Message.Chat,
-				Text: "/containers",
-			},
-		}
+		fakeUpdate := h.createFakeUpdate(callback.Message.Chat, "/containers")
 		h.handleContainers(fakeUpdate)
 	} else if strings.HasPrefix(data, "restart:") {
 		// Перезапуск контейнера
@@ -311,10 +332,22 @@ func (h *CommandHandler) handleCallbackQuery(update tgbotapi.Update) {
 		// Получение логов контейнера
 		containerID := strings.TrimPrefix(data, "logs:")
 		h.handleContainerAction(callback, "logs", containerID)
+	} else if data == "back" {
+		// Возврат к списку контейнеров
+		// Создаем фиктивный update для повторного вызова handleContainers
+		fakeUpdate := h.createFakeUpdate(callback.Message.Chat, "/containers")
+		h.handleContainers(fakeUpdate)
+	} else if data == "containers" {
+		// Создаем фиктивный update для вызова handleContainers
+		fakeUpdate := h.createFakeUpdate(callback.Message.Chat, "")
+		h.handleContainers(fakeUpdate)
+	} else if data == "services" {
+		// Показываем список сервисов
+		h.handleServices(callback)
 	} else if strings.HasPrefix(data, "service:") {
 		// Получение имени сервиса
 		serviceName := strings.TrimPrefix(data, "service:")
-
+		
 		// Получение статуса сервиса
 		serviceStatus, err := h.systemService.GetServiceStatus(serviceName)
 		if err != nil {
@@ -323,7 +356,7 @@ func (h *CommandHandler) handleCallbackQuery(update tgbotapi.Update) {
 			h.bot.Send(msg)
 			return
 		}
-
+		
 		// Создание inline клавиатуры с действиями для сервиса в зависимости от его статуса
 		var keyboard tgbotapi.InlineKeyboardMarkup
 		if serviceStatus.Status == "active" {
@@ -351,13 +384,13 @@ func (h *CommandHandler) handleCallbackQuery(update tgbotapi.Update) {
 				),
 			)
 		}
-
+		
 		// Отправка сообщения с клавиатурой действий
 		message := fmt.Sprintf("Выберите действие для сервиса *%s* (%s):", serviceName, serviceStatus.Status)
 		msg := tgbotapi.NewMessage(callback.Message.Chat.ID, message)
 		msg.ParseMode = "Markdown"
 		msg.ReplyMarkup = keyboard
-
+		
 		h.bot.Send(msg)
 	} else if strings.HasPrefix(data, "restart_service:") {
 		// Перезапуск сервиса
@@ -380,49 +413,38 @@ func (h *CommandHandler) handleCallbackQuery(update tgbotapi.Update) {
 		switch data {
 		case "status":
 			// Создаем фиктивный update для вызова handleStatus
-			fakeUpdate := tgbotapi.Update{
-				Message: &tgbotapi.Message{
-					Chat: callback.Message.Chat,
-				},
-			}
+			fakeUpdate := h.createFakeUpdate(callback.Message.Chat, "")
 			h.handleStatus(fakeUpdate)
 		case "containers":
 			// Создаем фиктивный update для вызова handleContainers
-			fakeUpdate := tgbotapi.Update{
-				Message: &tgbotapi.Message{
-					Chat: callback.Message.Chat,
-				},
-			}
+			fakeUpdate := h.createFakeUpdate(callback.Message.Chat, "")
 			h.handleContainers(fakeUpdate)
+		case "amnezia_vpn":
+			// Показываем меню управления Amnezia VPN
+			h.handleAmneziaVPNMenu(callback)
 		case "services":
 			// Показываем список сервисов
 			h.handleServices(callback)
+		case "services_active":
+			// Показываем список активных сервисов
+			h.handleServicesActive(callback)
+		case "services_inactive":
+			// Показываем список неактивных сервисов
+			h.handleServicesInactive(callback)
 		case "server_management":
 			// Показываем меню управления сервером
 			h.handleServerManagement(callback)
 		case "reboot":
 			// Создаем фиктивный update для вызова handleReboot
-			fakeUpdate := tgbotapi.Update{
-				Message: &tgbotapi.Message{
-					Chat: callback.Message.Chat,
-				},
-			}
+			fakeUpdate := h.createFakeUpdate(callback.Message.Chat, "")
 			h.handleReboot(fakeUpdate)
 		case "shutdown":
 			// Создаем фиктивный update для вызова handleShutdown
-			fakeUpdate := tgbotapi.Update{
-				Message: &tgbotapi.Message{
-					Chat: callback.Message.Chat,
-				},
-			}
+			fakeUpdate := h.createFakeUpdate(callback.Message.Chat, "")
 			h.handleShutdown(fakeUpdate)
 		case "back_to_main":
 			// Создаем фиктивный update для вызова handleStart
-			fakeUpdate := tgbotapi.Update{
-				Message: &tgbotapi.Message{
-					Chat: callback.Message.Chat,
-				},
-			}
+			fakeUpdate := h.createFakeUpdate(callback.Message.Chat, "")
 			h.handleStart(fakeUpdate)
 		case "confirm_reboot":
 			// Выполняем перезагрузку сервера
@@ -479,12 +501,7 @@ func (h *CommandHandler) handleCallbackQuery(update tgbotapi.Update) {
 					h.bot.Send(msg)
 
 					// Создаем фиктивный update для возврата к основному меню
-					fakeUpdate := tgbotapi.Update{
-						Message: &tgbotapi.Message{
-							Chat: callback.Message.Chat,
-							Text: "/start",
-						},
-					}
+					fakeUpdate := h.createFakeUpdate(callback.Message.Chat, "/start")
 					h.handleStart(fakeUpdate)
 				} else {
 					// Если есть обновления, показываем их
@@ -514,152 +531,18 @@ func (h *CommandHandler) handleCallbackQuery(update tgbotapi.Update) {
 
 			msg = tgbotapi.NewMessage(callback.Message.Chat.ID, message)
 			h.bot.Send(msg)
+		case "list_wireguard_clients":
+			// Показываем список клиентов WireGuard
+			h.showWireGuardClientsList(callback)
+		case "wireguard_status":
+			// Показываем статус WireGuard
+			h.showWireGuardStatus(callback)
+		case "create_wireguard_client":
+			// Создаем нового клиента WireGuard
+			h.handleCreateWireGuardClient(callback)
 		}
 	}
-
-	// Добавляем обработку новых callback-запросов для сервисов
-	switch data {
-	case "services_active":
-		h.handleServicesActive(callback)
-	case "services_inactive":
-		h.handleServicesInactive(callback)
-	case "status":
-		// Создаем фиктивный update для вызова handleStatus
-		fakeUpdate := tgbotapi.Update{
-			Message: &tgbotapi.Message{
-				Chat: callback.Message.Chat,
-			},
-		}
-		h.handleStatus(fakeUpdate)
-	case "containers":
-		// Создаем фиктивный update для вызова handleContainers
-		fakeUpdate := tgbotapi.Update{
-			Message: &tgbotapi.Message{
-				Chat: callback.Message.Chat,
-			},
-		}
-		h.handleContainers(fakeUpdate)
-	case "services":
-		// Показываем список сервисов
-		h.handleServices(callback)
-	case "server_management":
-		// Показываем меню управления сервером
-		h.handleServerManagement(callback)
-	case "reboot":
-		// Создаем фиктивный update для вызова handleReboot
-		fakeUpdate := tgbotapi.Update{
-			Message: &tgbotapi.Message{
-				Chat: callback.Message.Chat,
-			},
-		}
-		h.handleReboot(fakeUpdate)
-	case "shutdown":
-		// Создаем фиктивный update для вызова handleShutdown
-		fakeUpdate := tgbotapi.Update{
-			Message: &tgbotapi.Message{
-				Chat: callback.Message.Chat,
-			},
-		}
-		h.handleShutdown(fakeUpdate)
-	case "back_to_main":
-		// Создаем фиктивный update для вызова handleStart
-		fakeUpdate := tgbotapi.Update{
-			Message: &tgbotapi.Message{
-				Chat: callback.Message.Chat,
-			},
-		}
-		h.handleStart(fakeUpdate)
-	case "confirm_reboot":
-		// Выполняем перезагрузку сервера
-		err := h.systemService.Reboot()
-		if err != nil {
-			message := fmt.Sprintf("❌ Ошибка перезагрузки сервера: %v", err)
-			msg := tgbotapi.NewMessage(callback.Message.Chat.ID, message)
-			h.bot.Send(msg)
-		} else {
-			message := "🔄 Сервер перезагружается..."
-			msg := tgbotapi.NewMessage(callback.Message.Chat.ID, message)
-			h.bot.Send(msg)
-		}
-	case "confirm_shutdown":
-		// Выполняем выключение сервера
-		err := h.systemService.Shutdown()
-		if err != nil {
-			message := fmt.Sprintf("❌ Ошибка выключения сервера: %v", err)
-			msg := tgbotapi.NewMessage(callback.Message.Chat.ID, message)
-			h.bot.Send(msg)
-		} else {
-			message := "🔌 Сервер выключается..."
-			msg := tgbotapi.NewMessage(callback.Message.Chat.ID, message)
-			h.bot.Send(msg)
-		}
-	case "check_updates":
-		// Проверка обновлений системы
-		message := "🔍 Проверяю доступные обновления..."
-		msg := tgbotapi.NewMessage(callback.Message.Chat.ID, message)
-		h.bot.Send(msg)
-
-		// Выполняем проверку обновлений
-		updates, err := h.systemService.CheckUpdates()
-		if err != nil {
-			message = fmt.Sprintf("❌ Ошибка проверки обновлений: %v", err)
-			msg = tgbotapi.NewMessage(callback.Message.Chat.ID, message)
-			h.bot.Send(msg)
-		} else {
-			// Проверяем, есть ли реальные пакеты для обновления
-			lines := strings.Split(updates, "\n")
-			packageCount := 0
-
-			// Подсчитываем количество строк с реальными пакетами (исключая заголовок и пустые строки)
-			for _, line := range lines {
-				if strings.Contains(line, "/") && !strings.HasPrefix(line, "Listing...") {
-					packageCount++
-				}
-			}
-
-			if packageCount == 0 {
-				// Если обновлений нет, выводим сообщение и возвращаем к основному меню
-				message = "✅ Все обновления установлены!"
-				msg = tgbotapi.NewMessage(callback.Message.Chat.ID, message)
-				h.bot.Send(msg)
-
-				// Создаем фиктивный update для возврата к основному меню
-				fakeUpdate := tgbotapi.Update{
-					Message: &tgbotapi.Message{
-						Chat: callback.Message.Chat,
-						Text: "/start",
-					},
-				}
-				h.handleStart(fakeUpdate)
-			} else {
-				// Если есть обновления, показываем их
-				// Ограничиваем вывод до 2000 символов
-				if len(updates) > 2000 {
-					updates = updates[:2000] + "\n... (вывод обрезан)"
-				}
-				message = fmt.Sprintf("🔍 *Доступные обновления:*\n```\n%s\n```", updates)
-				msg = tgbotapi.NewMessage(callback.Message.Chat.ID, message)
-				msg.ParseMode = "Markdown"
-				h.bot.Send(msg)
-			}
-		}
-	case "upgrade_system":
-		// Обновление системы
-		message := "⬆️ Начинаю обновление системы..."
-		msg := tgbotapi.NewMessage(callback.Message.Chat.ID, message)
-		h.bot.Send(msg)
-
-		// Выполняем обновление системы
-		err := h.systemService.UpgradeSystem()
-		if err != nil {
-			message = fmt.Sprintf("❌ Ошибка обновления системы: %v", err)
-		} else {
-			message = "✅ Система успешно обновлена!"
-		}
-
-		msg = tgbotapi.NewMessage(callback.Message.Chat.ID, message)
-		h.bot.Send(msg)
-	}
+	
 }
 
 // handleServerManagement показывает меню управления сервером
@@ -684,11 +567,7 @@ func (h *CommandHandler) handleServerManagement(callback *tgbotapi.CallbackQuery
 	)
 
 	message := "🖥 *Управление сервером*\n\nВыберите действие:"
-	editMsg := tgbotapi.NewEditMessageText(callback.Message.Chat.ID, callback.Message.MessageID, message)
-	editMsg.ParseMode = "Markdown"
-	editMsg.ReplyMarkup = &keyboard
-
-	h.bot.Send(editMsg)
+	h.sendEditMessageWithKeyboard(callback.Message.Chat.ID, callback.Message.MessageID, message, &keyboard)
 }
 
 // handleServices показывает список systemd сервисов с цветовыми индикаторами
@@ -741,11 +620,57 @@ func (h *CommandHandler) handleServices(callback *tgbotapi.CallbackQuery) {
 	keyboard = tgbotapi.NewInlineKeyboardMarkup(buttons...)
 
 	message := "⚙️ *Сервисы системы*\n\nВыберите категорию сервисов:"
-	editMsg := tgbotapi.NewEditMessageText(callback.Message.Chat.ID, callback.Message.MessageID, message)
-	editMsg.ParseMode = "Markdown"
-	editMsg.ReplyMarkup = &keyboard
+	h.sendEditMessageWithKeyboard(callback.Message.Chat.ID, callback.Message.MessageID, message, &keyboard)
+}
 
-	h.bot.Send(editMsg)
+// showWireGuardClientsList показывает список клиентов WireGuard, полученных напрямую из контейнера
+func (h *CommandHandler) showWireGuardClientsList(callback *tgbotapi.CallbackQuery) {
+	// Получение списка клиентов WireGuard напрямую из контейнера
+	clients, err := h.amneziaService.GetWireGuardClients()
+	if err != nil {
+		message := fmt.Sprintf("❌ Ошибка получения списка клиентов WireGuard: %v", err)
+		editMsg := tgbotapi.NewEditMessageText(callback.Message.Chat.ID, callback.Message.MessageID, message)
+		h.bot.Send(editMsg)
+		return
+	}
+	
+	if len(clients) == 0 {
+		message := "📭 Нет клиентов WireGuard"
+		editMsg := tgbotapi.NewEditMessageText(callback.Message.Chat.ID, callback.Message.MessageID, message)
+		h.bot.Send(editMsg)
+		return
+	}
+	
+	// Формирование сообщения со списком клиентов в новом формате
+	message := "Список клиентов WireGuard:\n"
+	for _, client := range clients {
+		// Используем метод String() структуры WireGuardClient для форматирования
+		message += client.String() + "\n"
+	}
+	
+	h.sendEditMessageWithKeyboard(callback.Message.Chat.ID, callback.Message.MessageID, message, h.createBackKeyboard())
+}
+
+// handleAmneziaVPNMenu показывает меню управления Amnezia VPN
+func (h *CommandHandler) handleAmneziaVPNMenu(callback *tgbotapi.CallbackQuery) {
+	// Создание inline клавиатуры с командами управления Amnezia VPN
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("📋 Список WireGuard клиентов", "list_wireguard_clients"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("📊 Статус WireGuard", "wireguard_status"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("➕ Создать клиента WireGuard", "create_wireguard_client"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад", "back_to_main"),
+		),
+	)
+	
+	message := "🛡️ *Управление Amnezia VPN*\n\nВыберите действие:"
+	h.sendEditMessageWithKeyboard(callback.Message.Chat.ID, callback.Message.MessageID, message, &keyboard)
 }
 
 // handleServicesActive показывает список активных systemd сервисов
@@ -811,29 +736,42 @@ func (h *CommandHandler) handleContainerAction(callback *tgbotapi.CallbackQuery,
 		}
 	}
 
-	msg := tgbotapi.NewMessage(callback.Message.Chat.ID, message)
-	if action == "status" || action == "logs" {
-		msg.ParseMode = "Markdown"
-	}
-	h.bot.Send(msg)
+	// Отправляем ответ пользователю
+	h.sendActionResponse(callback.Message.Chat.ID, message, action == "status" || action == "logs")
 }
 
 // handleServiceAction обрабатывает действия с сервисом
 func (h *CommandHandler) handleServiceAction(callback *tgbotapi.CallbackQuery, action, serviceName string) {
 	var message string
-	var cmd *exec.Cmd
 
 	switch action {
 	case "restart":
-		cmd = exec.Command("sudo", "systemctl", "restart", serviceName+".service")
-		err := cmd.Run()
+		serviceStatus, err := h.systemService.GetServiceStatus(serviceName)
 		if err != nil {
-			message = fmt.Sprintf("❌ Ошибка перезапуска сервиса %s: %v", serviceName, err)
+			message = fmt.Sprintf("❌ Ошибка получения статуса сервиса %s: %v", serviceName, err)
 		} else {
-			message = fmt.Sprintf("✅ Сервис %s успешно перезапущен", serviceName)
+			if serviceStatus.Status == "active" {
+				// Сервис активен, можно перезапускать
+				cmd := exec.Command("sudo", "systemctl", "restart", serviceName+".service")
+				err := cmd.Run()
+				if err != nil {
+					message = fmt.Sprintf("❌ Ошибка перезапуска сервиса %s: %v", serviceName, err)
+				} else {
+					message = fmt.Sprintf("✅ Сервис %s успешно перезапущен", serviceName)
+				}
+			} else {
+				// Сервис не активен, пытаемся запустить
+				cmd := exec.Command("sudo", "systemctl", "start", serviceName+".service")
+				err := cmd.Run()
+				if err != nil {
+					message = fmt.Sprintf("❌ Ошибка запуска сервиса %s: %v", serviceName, err)
+				} else {
+					message = fmt.Sprintf("✅ Сервис %s успешно запущен", serviceName)
+				}
+			}
 		}
 	case "stop":
-		cmd = exec.Command("sudo", "systemctl", "stop", serviceName+".service")
+		cmd := exec.Command("sudo", "systemctl", "stop", serviceName+".service")
 		err := cmd.Run()
 		if err != nil {
 			message = fmt.Sprintf("❌ Ошибка остановки сервиса %s: %v", serviceName, err)
@@ -841,7 +779,7 @@ func (h *CommandHandler) handleServiceAction(callback *tgbotapi.CallbackQuery, a
 			message = fmt.Sprintf("✅ Сервис %s успешно остановлен", serviceName)
 		}
 	case "start":
-		cmd = exec.Command("sudo", "systemctl", "start", serviceName+".service")
+		cmd := exec.Command("sudo", "systemctl", "start", serviceName+".service")
 		err := cmd.Run()
 		if err != nil {
 			message = fmt.Sprintf("❌ Ошибка запуска сервиса %s: %v", serviceName, err)
@@ -849,7 +787,7 @@ func (h *CommandHandler) handleServiceAction(callback *tgbotapi.CallbackQuery, a
 			message = fmt.Sprintf("✅ Сервис %s успешно запущен", serviceName)
 		}
 	case "status":
-		cmd = exec.Command("sudo", "systemctl", "status", serviceName+".service")
+		cmd := exec.Command("sudo", "systemctl", "status", serviceName+".service")
 		output, err := cmd.Output()
 		if err != nil {
 			message = fmt.Sprintf("❌ Ошибка получения статуса сервиса %s: %v", serviceName, err)
@@ -863,11 +801,8 @@ func (h *CommandHandler) handleServiceAction(callback *tgbotapi.CallbackQuery, a
 		}
 	}
 
-	msg := tgbotapi.NewMessage(callback.Message.Chat.ID, message)
-	if action == "status" {
-		msg.ParseMode = "Markdown"
-	}
-	h.bot.Send(msg)
+	// Отправляем ответ пользователю
+	h.sendActionResponse(callback.Message.Chat.ID, message, action == "status")
 }
 
 // handleUnknown обрабатывает неизвестные команды
@@ -876,6 +811,16 @@ func (h *CommandHandler) handleUnknown(update tgbotapi.Update) {
 
 	msg := tgbotapi.NewMessage(update.Message.Chat.ID, message)
 	h.bot.Send(msg)
+}
+
+// createFakeUpdate создает фиктивный update для вызова обработчиков
+func (h *CommandHandler) createFakeUpdate(chat *tgbotapi.Chat, text string) tgbotapi.Update {
+	return tgbotapi.Update{
+		Message: &tgbotapi.Message{
+			Chat: chat,
+			Text: text,
+		},
+	}
 }
 
 // getFilteredAndSortedServices получает список сервисов, фильтрует их по статусу и сортирует по имени
@@ -947,9 +892,116 @@ func (h *CommandHandler) showServicesList(callback *tgbotapi.CallbackQuery, acti
 		message = fmt.Sprintf("❌ *Неактивные сервисы* (%d)\n\nВыберите сервис для управления:", len(services))
 	}
 
-	editMsg := tgbotapi.NewEditMessageText(callback.Message.Chat.ID, callback.Message.MessageID, message)
-	editMsg.ParseMode = "Markdown"
-	editMsg.ReplyMarkup = &keyboard
+	h.sendEditMessageWithKeyboard(callback.Message.Chat.ID, callback.Message.MessageID, message, &keyboard)
+}
 
+// sendSimpleMessage отправляет простое сообщение с клавиатурой "Назад"
+func (h *CommandHandler) sendSimpleMessage(chatID int64, message string) {
+	h.sendSimpleMessageWithKeyboard(chatID, message, h.createBackKeyboard())
+}
+
+// sendSimpleMessageWithKeyboard отправляет простое сообщение с заданной клавиатурой
+func (h *CommandHandler) sendSimpleMessageWithKeyboard(chatID int64, message string, keyboard *tgbotapi.InlineKeyboardMarkup) {
+	msg := tgbotapi.NewMessage(chatID, message)
+	msg.ParseMode = "Markdown"
+	msg.ReplyMarkup = keyboard
+	h.bot.Send(msg)
+}
+
+// sendEditMessageWithKeyboard отправляет редактируемое сообщение с заданной клавиатурой
+func (h *CommandHandler) sendEditMessageWithKeyboard(chatID int64, messageID int, message string, keyboard *tgbotapi.InlineKeyboardMarkup) {
+	editMsg := tgbotapi.NewEditMessageText(chatID, messageID, message)
+	editMsg.ParseMode = "Markdown"
+	editMsg.ReplyMarkup = keyboard
 	h.bot.Send(editMsg)
+}
+
+// sendActionResponse отправляет ответ на действие пользователя
+func (h *CommandHandler) sendActionResponse(chatID int64, message string, parseMode bool) {
+	msg := tgbotapi.NewMessage(chatID, message)
+	if parseMode {
+		msg.ParseMode = "Markdown"
+	}
+	h.bot.Send(msg)
+}
+
+// handleCreateWireGuardClientInput обрабатывает ввод имени клиента для создания WireGuard клиента
+func (h *CommandHandler) handleCreateWireGuardClientInput(update tgbotapi.Update, pendingInput PendingInput) {
+	// Получаем имя клиента из сообщения пользователя
+	clientName := strings.TrimSpace(update.Message.Text)
+	chatID := update.Message.Chat.ID
+	
+	// Удаляем pending input
+	delete(h.pendingInputs, chatID)
+	
+	// Проверяем, что имя клиента не пустое
+	if clientName == "" {
+		message := "❌ Имя клиента не может быть пустым. Попробуйте еще раз."
+		msg := tgbotapi.NewMessage(chatID, message)
+		h.bot.Send(msg)
+		return
+	}
+	
+	// Создаем клиента WireGuard
+	_, amneziaVPNConfig, amneziaWGConfig, err := h.amneziaService.CreateWireGuardClient(clientName)
+	if err != nil {
+		message := fmt.Sprintf("❌ Ошибка создания клиента WireGuard: %v", err)
+		msg := tgbotapi.NewMessage(chatID, message)
+		h.bot.Send(msg)
+		return
+	}
+	
+	// Отправляем подтверждение создания клиента
+	message := fmt.Sprintf("✅ Клиент WireGuard *%s* успешно создан!", clientName)
+	msg := tgbotapi.NewMessage(chatID, message)
+	msg.ParseMode = "Markdown"
+	h.bot.Send(msg)
+	
+	// Отправляем конфигурацию Amnezia VPN в виде блока кода
+	message = fmt.Sprintf("Конфигурация Amnezia VPN:\n```\n%s\n```", amneziaVPNConfig)
+	msg = tgbotapi.NewMessage(chatID, message)
+	msg.ParseMode = "Markdown"
+	h.bot.Send(msg)
+	
+	// Отправляем файл конфигурации в формате AmneziaWG
+	amneziaWGFileName := fmt.Sprintf("%s_amnezia_wg.conf", clientName)
+	doc2 := tgbotapi.NewDocumentUpload(chatID, tgbotapi.FileBytes{
+		Name:  amneziaWGFileName,
+		Bytes: []byte(amneziaWGConfig),
+	})
+	h.bot.Send(doc2)
+	
+	// Отправляем кнопку "Назад"
+	backMsg := tgbotapi.NewMessage(chatID, "Файлы конфигурации отправлены.")
+	backMsg.ReplyMarkup = h.createBackKeyboard()
+	h.bot.Send(backMsg)
+}
+
+// handleCreateWireGuardClient обрабатывает создание нового клиента WireGuard
+func (h *CommandHandler) handleCreateWireGuardClient(callback *tgbotapi.CallbackQuery) {
+	// Запрашиваем у пользователя имя нового клиента
+	message := "Введите имя нового клиента WireGuard:"
+	msg := tgbotapi.NewMessage(callback.Message.Chat.ID, message)
+	h.bot.Send(msg)
+	
+	// Сохраняем состояние ожидания ввода от пользователя
+	h.pendingInputs[callback.Message.Chat.ID] = PendingInput{
+		Action: "create_wireguard_client",
+		Data:   make(map[string]string),
+	}
+}
+
+// showWireGuardStatus показывает статус WireGuard интерфейса
+func (h *CommandHandler) showWireGuardStatus(callback *tgbotapi.CallbackQuery) {
+	// Получение статуса WireGuard
+	status, err := h.amneziaService.GetWireGuardStatus()
+	if err != nil {
+		message := fmt.Sprintf("❌ Ошибка получения статуса WireGuard: %v", err)
+		h.sendEditMessageWithKeyboard(callback.Message.Chat.ID, callback.Message.MessageID, message, h.createBackKeyboard())
+		return
+	}
+	
+	// Отправляем статус WireGuard
+	message := fmt.Sprintf("Статус WireGuard:\n```\n%s\n```", status)
+	h.sendEditMessageWithKeyboard(callback.Message.Chat.ID, callback.Message.MessageID, message, h.createBackKeyboard())
 }

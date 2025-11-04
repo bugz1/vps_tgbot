@@ -389,19 +389,7 @@ func (m *Monitor) GetServiceStatus(serviceName string) (ServiceStatus, error) {
 		return m.getServiceStatusFallback(serviceName)
 	}
 
-	// Определяем эмодзи в зависимости от статуса
-	var emoji string
-	if activeState == "active" {
-		emoji = "🟩"
-	} else {
-		emoji = "🟥"
-	}
-
-	return ServiceStatus{
-		Name:   serviceName,
-		Status: activeState,
-		Emoji:  emoji,
-	}, nil
+	return m.createServiceStatus(serviceName, activeState)
 }
 
 // getServiceStatusFallback получает статус конкретного сервиса через вызов systemctl (fallback метод)
@@ -421,6 +409,11 @@ func (m *Monitor) getServiceStatusFallback(serviceName string) (ServiceStatus, e
 		}
 	}
 
+	return m.createServiceStatus(serviceName, status)
+}
+
+// createServiceStatus создает структуру ServiceStatus с правильным эмодзи
+func (m *Monitor) createServiceStatus(serviceName, status string) (ServiceStatus, error) {
 	// Определяем эмодзи в зависимости от статуса
 	var emoji string
 	if status == "active" {

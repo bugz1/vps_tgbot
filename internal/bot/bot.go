@@ -4,6 +4,7 @@ import (
 	"log"
 
 	"tgbot/internal/handlers"
+	"tgbot/internal/services/amnezia"
 	"tgbot/internal/services/docker"
 	"tgbot/internal/services/system"
 	"tgbot/pkg/config"
@@ -18,6 +19,7 @@ type Bot struct {
 	commandHandler *handlers.CommandHandler
 	systemService  *system.Monitor
 	dockerService  *docker.Manager
+	amneziaService *amnezia.Service
 }
 
 // NewBot создает нового бота
@@ -38,8 +40,11 @@ func NewBot(cfg *config.Config) (*Bot, error) {
 		return nil, err
 	}
 
+	// Создание сервиса Amnezia VPN
+	amneziaService := amnezia.NewService(dockerService)
+
 	// Создание обработчика команд
-	commandHandler := handlers.NewCommandHandler(api, systemService, dockerService)
+	commandHandler := handlers.NewCommandHandler(api, systemService, dockerService, amneziaService)
 
 	return &Bot{
 		api:            api,
@@ -47,6 +52,7 @@ func NewBot(cfg *config.Config) (*Bot, error) {
 		commandHandler: commandHandler,
 		systemService:  systemService,
 		dockerService:  dockerService,
+		amneziaService: amneziaService,
 	}, nil
 }
 
