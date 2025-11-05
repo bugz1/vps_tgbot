@@ -35,7 +35,7 @@ func NewBot(cfg *config.Config) (*Bot, error) {
 
 	// Создание сервисов
 	systemService := system.NewMonitor()
-	dockerService, err := docker.NewManager(cfg.Docker.Socket)
+	dockerService, err := docker.NewManager(cfg.Docker.Socket, cfg.Docker.Timeout)
 	if err != nil {
 		return nil, err
 	}

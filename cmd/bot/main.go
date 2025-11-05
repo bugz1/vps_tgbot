@@ -92,7 +92,8 @@ func createDefaultConfig() error {
 	viper.SetDefault("monitoring.cpu_threshold", 90)
 	viper.SetDefault("monitoring.disk_threshold", 10)
 	viper.SetDefault("docker.socket", "/var/run/docker.sock")
-	viper.SetDefault("docker.timeout", 30)
+	// Default Docker command timeout (seconds)
+	viper.SetDefault("docker.timeout", 10)
 
 	return viper.WriteConfigAs("config.yaml")
 }

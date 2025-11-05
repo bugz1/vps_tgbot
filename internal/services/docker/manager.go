@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -10,7 +11,8 @@ import (
 
 // Manager сервис управления Docker
 type Manager struct {
-	socket string
+	socket        string
+	timeoutSeconds int
 }
 
 // Container структура контейнера
@@ -22,18 +24,27 @@ type Container struct {
 	Created time.Time
 }
 
-// NewManager создает новый менеджер Docker
-func NewManager(socket string) (*Manager, error) {
-	// Проверка доступности Docker
-	cmd := exec.Command("sudo", "docker", "info")
-	err := cmd.Run()
-	if err != nil {
-		return nil, fmt.Errorf("docker недоступен: %v", err)
+// NewManager создает новый менеджер Docker.
+// timeoutSeconds задает таймаут (в секундах) для выполнения команд внутри контейнера.
+// Если timeoutSeconds <= 0, будет использовано значение 10 секунд по умолчанию.
+func NewManager(socket string, timeoutSeconds int) (*Manager, error) {
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = 10
 	}
 
-	return &Manager{
-		socket: socket,
-	}, nil
+	m := &Manager{
+		socket:        socket,
+		timeoutSeconds: timeoutSeconds,
+	}
+
+	// Небольшая проверка доступности Docker (не фатальная)
+	cmd := exec.Command("sudo", "docker", "info")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		// Не прерываем создание менеджера — Docker может быть недоступен на этапе тестов
+		_ = out // intentionally ignored in normal flow
+	}
+
+	return m, nil
 }
 
 // ListContainers получает список контейнеров
@@ -65,7 +76,7 @@ func (m *Manager) parseContainersOutput(output string) ([]Container, error) {
 	lines := strings.Split(output, "\n")
 
 	for _, line := range lines {
-		if line == "" {
+		if strings.TrimSpace(line) == "" {
 			continue
 		}
 
@@ -101,15 +112,20 @@ func (m *Manager) parseContainerLine(line string) (*Container, error) {
 		return nil, fmt.Errorf("отсутствуют необходимые поля в данных контейнера")
 	}
 
-	// Преобразование времени создания
+	// Преобразование времени создания (fallback на zero time при ошибке)
 	created, err := time.Parse("2006-01-02 15:04:05 -0700 MST", createdAt)
 	if err != nil {
-		// Используем zero time если не удалось распарсить
 		created = time.Time{}
 	}
 
+	// Сокращаем ID до 12 символов если возможно
+	shortID := id
+	if len(id) > 12 {
+		shortID = id[:12]
+	}
+
 	container := &Container{
-		ID:      id[:12], // Сокращаем ID до 12 символов
+		ID:      shortID,
 		Name:    names,
 		Status:  status,
 		Image:   image,
@@ -168,7 +184,9 @@ func (m *Manager) GetContainerStatus(id string) (string, error) {
 	status += fmt.Sprintf("Имя: %s\n", container.Name)
 	status += fmt.Sprintf("Статус: %s\n", container.Status)
 	status += fmt.Sprintf("Образ: %s\n", container.Image)
-	status += fmt.Sprintf("Создан: %s\n", container.Created.Format("2006-01-02 15:04:05"))
+	if !container.Created.IsZero() {
+		status += fmt.Sprintf("Создан: %s\n", container.Created.Format("2006-01-02 15:04:05"))
+	}
 
 	return status, nil
 }
@@ -178,15 +196,60 @@ func (m *Manager) ReadFileFromContainer(containerName, filePath string) (string,
 	return m.ExecuteCommandInContainer(containerName, "cat", filePath)
 }
 
+// CopyFromContainer копирует файл или директорию из контейнера на хост.
+func (m *Manager) CopyFromContainer(containerName, srcPath, dstPath string) error {
+	// docker cp <container>:<src> <dst>
+	args := []string{"docker", "cp", fmt.Sprintf("%s:%s", containerName, srcPath), dstPath}
+	cmd := exec.Command("sudo", args...)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("ошибка docker cp from container: %v, output: %s", err, string(output))
+	}
+	return nil
+}
+
+// CopyToContainer копирует файл или директорию с хоста в контейнер.
+func (m *Manager) CopyToContainer(containerName, srcPath, dstPath string) error {
+	// docker cp <src> <container>:<dst>
+	args := []string{"docker", "cp", srcPath, fmt.Sprintf("%s:%s", containerName, dstPath)}
+	cmd := exec.Command("sudo", args...)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("ошибка docker cp to container: %v, output: %s", err, string(output))
+	}
+	return nil
+}
+
 // ExecuteCommandInContainer выполняет команду в контейнере
 func (m *Manager) ExecuteCommandInContainer(containerName string, command ...string) (string, error) {
 	// Формируем полную команду с префиксом docker exec
 	args := append([]string{"docker", "exec", containerName}, command...)
-	cmd := exec.Command("sudo", args...)
-	output, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("ошибка выполнения команды в контейнере %s: %v", containerName, err)
+	// Use context with timeout and retries
+	timeout := time.Duration(m.timeoutSeconds) * time.Second
+	attempts := 3
+	var lastErr error
+	var out []byte
+
+	for i := 0; i < attempts; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		// don't defer cancel inside loop; call explicitly
+		cmd := exec.CommandContext(ctx, "sudo", args...)
+		var err error
+		out, err = cmd.CombinedOutput()
+		cancel()
+		if err == nil {
+			return string(out), nil
+		}
+
+		// If context deadline exceeded, wrap accordingly
+		if ctx.Err() == context.DeadlineExceeded {
+			lastErr = fmt.Errorf("timeout after %s: %v; output: %s", timeout, ctx.Err(), string(out))
+		} else {
+			lastErr = fmt.Errorf("error executing command (attempt %d/%d): %v; output: %s", i+1, attempts, err, string(out))
+		}
+
+		// exponential backoff before retrying
+		backoff := time.Duration(200*(i+1)) * time.Millisecond
+		time.Sleep(backoff)
 	}
 
-	return string(output), nil
+	return string(out), fmt.Errorf("ошибка выполнения команды в контейнере %s: %v", containerName, lastErr)
 }

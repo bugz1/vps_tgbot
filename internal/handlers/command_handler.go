@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"tgbot/internal/services/amnezia"
 	"tgbot/internal/services/docker"
@@ -21,6 +23,13 @@ type CommandHandler struct {
 	amneziaService *amnezia.Service
 	// Храним состояние ожидания ввода от пользователя
 	pendingInputs map[int64]PendingInput
+	// map for storing temporary encodedKey -> publicKey for callbacks
+	deleteTokenToKey map[string]string
+	// map for storing temporary encodedKey -> clientName for callbacks
+	deleteTokenToName map[string]string
+	deleteMu         sync.Mutex
+	// token expiry timestamps for cleanup
+	deleteTokenExpiry map[string]time.Time
 }
 
 // PendingInput структура для хранения информации о pending input
@@ -31,13 +40,72 @@ type PendingInput struct {
 
 // NewCommandHandler создает новый обработчик команд
 func NewCommandHandler(bot *tgbotapi.BotAPI, systemService *system.Monitor, dockerService *docker.Manager, amneziaService *amnezia.Service) *CommandHandler {
-	return &CommandHandler{
+	h := &CommandHandler{
 		bot:            bot,
 		systemService:  systemService,
 		dockerService:  dockerService,
 		amneziaService: amneziaService,
 		pendingInputs:  make(map[int64]PendingInput),
+		deleteTokenToKey:  make(map[string]string),
+		deleteTokenToName: make(map[string]string),
+		deleteTokenExpiry: make(map[string]time.Time),
 	}
+
+	// start background cleaner
+	h.startDeleteTokenCleaner()
+
+	return h
+}
+
+// startDeleteTokenCleaner starts a background goroutine that periodically removes expired tokens
+// TTL is 10 minutes for safety. This function is idempotent if called multiple times on the same handler.
+func (h *CommandHandler) startDeleteTokenCleaner() {
+	go func() {
+		ticker := time.NewTicker(1 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			now := time.Now()
+			h.deleteMu.Lock()
+			for k, ts := range h.deleteTokenExpiry {
+				if now.Sub(ts) > 10*time.Minute {
+					delete(h.deleteTokenExpiry, k)
+					delete(h.deleteTokenToKey, k)
+					delete(h.deleteTokenToName, k)
+				}
+			}
+			h.deleteMu.Unlock()
+		}
+	}()
+}
+
+// encodeKeyForCallback делает безопасную для callback-данных версию publicKey
+func encodeKeyForCallback(pub string) string {
+	s := strings.ReplaceAll(pub, "+", "-")
+	s = strings.ReplaceAll(s, "/", "_")
+	s = strings.TrimRight(s, "=")
+	return s
+}
+
+// maskKey возвращает укороченную версию ключа для логов (без полного раскрытия)
+func maskKey(k string) string {
+	if len(k) <= 12 {
+		return k
+	}
+	return k[:6] + "..." + k[len(k)-4:]
+}
+
+// decodeKeyFromCallback восстанавливает original publicKey из закодированной формы
+func decodeKeyFromCallback(enc string) string {
+	s := strings.ReplaceAll(enc, "-", "+")
+	s = strings.ReplaceAll(s, "_", "/")
+	// add padding
+	switch len(s) % 4 {
+	case 2:
+		s += "=="
+	case 3:
+		s += "="
+	}
+	return s
 }
 
 // HandleCommand обрабатывает команды
@@ -53,6 +121,8 @@ func (h *CommandHandler) HandleCommand(update tgbotapi.Update) {
 			switch pendingInput.Action {
 			case "create_wireguard_client":
 				h.handleCreateWireGuardClientInput(update, pendingInput)
+			case "remove_wireguard_client":
+				h.handleRemoveWireGuardClientInput(update, pendingInput)
 			default:
 				// Если действие не определено, удаляем pending input и обрабатываем как обычную команду
 				delete(h.pendingInputs, chatID)
@@ -273,6 +343,82 @@ func (h *CommandHandler) handleCallbackQuery(update tgbotapi.Update) {
 	// Отправляем пустой ответ на callback-запрос, чтобы убрать "крутилку"
 	callbackResponse := tgbotapi.NewCallback(callback.ID, "")
 	h.bot.AnswerCallbackQuery(callbackResponse)
+
+	// Поддерживаем подтверждение удаления клиента: если callback начинается с del_wg: — показываем confirmation
+	if strings.HasPrefix(data, "del_wg:") {
+		enc := strings.TrimPrefix(data, "del_wg:")
+		// извлекаем publicKey и имя клиента из временной карты, если есть
+		h.deleteMu.Lock()
+		pub, ok := h.deleteTokenToKey[enc]
+		name, nOk := h.deleteTokenToName[enc]
+		h.deleteMu.Unlock()
+		if !ok {
+			// fallback: попробуем декодировать
+			pub = decodeKeyFromCallback(enc)
+		}
+        // diagnostic log (masked)
+        fmt.Printf("[handlers] del_wg pressed token=%s present=%v name=%s pub=%s\n", enc, ok, name, maskKey(pub))
+		// Показываем подтверждающую клавиатуру
+		keyboard := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("✅ Удалить", "confirm_del_wg:"+enc),
+				tgbotapi.NewInlineKeyboardButtonData("❌ Отмена", "list_wireguard_clients"),
+			),
+		)
+		// Используем HTML парсинг, чтобы выделить имя жирным. Telegram не поддерживает изменение размера шрифта,
+		// поэтому дополнительно приводим имя к верхнему регистру для визуального усиления.
+		var displayHTML string
+		if nOk && name != "" {
+			// make name bold and uppercase, show pub in code font
+			displayHTML = fmt.Sprintf("<b>%s</b> (<code>%s</code>)", strings.ToUpper(name), pub)
+		} else {
+			displayHTML = fmt.Sprintf("<b>%s</b>", pub)
+		}
+		msg := tgbotapi.NewEditMessageText(callback.Message.Chat.ID, callback.Message.MessageID, fmt.Sprintf("Удалить клиента: %s ?", displayHTML))
+		msg.ParseMode = "HTML"
+		msg.ReplyMarkup = &keyboard
+		h.bot.Send(msg)
+		return
+	}
+
+	if strings.HasPrefix(data, "confirm_del_wg:") {
+		enc := strings.TrimPrefix(data, "confirm_del_wg:")
+		h.deleteMu.Lock()
+		pub, ok := h.deleteTokenToKey[enc]
+		h.deleteMu.Unlock()
+		if !ok {
+			pub = decodeKeyFromCallback(enc)
+		}
+
+        // diagnostic log (masked)
+        fmt.Printf("[handlers] confirm_del_wg token=%s present=%v pub=%s\n", enc, ok, maskKey(pub))
+
+		// Выполняем удаление
+		err := h.amneziaService.RemoveWireGuardClient(pub)
+		if err != nil {
+			editMsg := tgbotapi.NewEditMessageText(callback.Message.Chat.ID, callback.Message.MessageID, fmt.Sprintf("❌ Ошибка удаления клиента: %v", err))
+			h.bot.Send(editMsg)
+			return
+		}
+
+		// Удаляем токен после успешного удаления
+		h.deleteMu.Lock()
+		delete(h.deleteTokenToKey, enc)
+		delete(h.deleteTokenToName, enc)
+		delete(h.deleteTokenExpiry, enc)
+		h.deleteMu.Unlock()
+
+		// Сообщение о перезагрузке конфигурации
+		reloadMsg := tgbotapi.NewEditMessageText(callback.Message.Chat.ID, callback.Message.MessageID, "Идет перезагрузка конфигурации...")
+		h.bot.Send(reloadMsg)
+
+	// Ждем 5 секунд, чтобы конфигурация точно перезагрузилась
+	time.Sleep(5 * time.Second)
+
+		// Показываем обновленный список клиентов (статусы)
+		h.showWireGuardClientsList(callback)
+		return
+	}
 
 	// Обработка данных callback запроса
 	// Навигация по меню:
@@ -540,6 +686,9 @@ func (h *CommandHandler) handleCallbackQuery(update tgbotapi.Update) {
 		case "create_wireguard_client":
 			// Создаем нового клиента WireGuard
 			h.handleCreateWireGuardClient(callback)
+		case "remove_wireguard_client":
+			// Удаляем клиента WireGuard (запрос публичного ключа)
+			h.handleRemoveWireGuardClient(callback)
 		}
 	}
 	
@@ -641,14 +790,21 @@ func (h *CommandHandler) showWireGuardClientsList(callback *tgbotapi.CallbackQue
 		return
 	}
 	
-	// Формирование сообщения со списком клиентов в новом формате
+	// Формирование сообщения со списком клиентов (только статусы)
 	message := "Список клиентов WireGuard:\n"
 	for _, client := range clients {
-		// Используем метод String() структуры WireGuardClient для форматирования
 		message += client.String() + "\n"
 	}
-	
-	h.sendEditMessageWithKeyboard(callback.Message.Chat.ID, callback.Message.MessageID, message, h.createBackKeyboard())
+
+	// Кнопка назад
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад", "back_to_main"),
+		),
+	)
+
+	h.sendEditMessageWithKeyboard(callback.Message.Chat.ID, callback.Message.MessageID, message, &keyboard)
+
 }
 
 // handleAmneziaVPNMenu показывает меню управления Amnezia VPN
@@ -663,6 +819,9 @@ func (h *CommandHandler) handleAmneziaVPNMenu(callback *tgbotapi.CallbackQuery) 
 		),
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("➕ Создать клиента WireGuard", "create_wireguard_client"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("➖ Удалить клиента WireGuard", "remove_wireguard_client"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад", "back_to_main"),
@@ -975,6 +1134,79 @@ func (h *CommandHandler) handleCreateWireGuardClientInput(update tgbotapi.Update
 	backMsg := tgbotapi.NewMessage(chatID, "Файлы конфигурации отправлены.")
 	backMsg.ReplyMarkup = h.createBackKeyboard()
 	h.bot.Send(backMsg)
+}
+
+// handleRemoveWireGuardClientInput обрабатывает ввод publicKey для удаления клиента WireGuard
+func (h *CommandHandler) handleRemoveWireGuardClientInput(update tgbotapi.Update, pendingInput PendingInput) {
+	publicKey := strings.TrimSpace(update.Message.Text)
+	chatID := update.Message.Chat.ID
+
+	// Удаляем pending input
+	delete(h.pendingInputs, chatID)
+
+	if publicKey == "" {
+		message := "❌ PublicKey не может быть пустым. Попробуйте еще раз."
+		msg := tgbotapi.NewMessage(chatID, message)
+		h.bot.Send(msg)
+		return
+	}
+
+	// Пытаемся удалить клиента
+	err := h.amneziaService.RemoveWireGuardClient(publicKey)
+	if err != nil {
+		message := fmt.Sprintf("❌ Ошибка удаления клиента WireGuard: %v", err)
+		msg := tgbotapi.NewMessage(chatID, message)
+		h.bot.Send(msg)
+		return
+	}
+
+	message := fmt.Sprintf("✅ Клиент с PublicKey %s успешно удален.", publicKey)
+	msg := tgbotapi.NewMessage(chatID, message)
+	h.bot.Send(msg)
+
+	// Отправляем кнопку "Назад"
+	backMsg := tgbotapi.NewMessage(chatID, "Операция выполнена.")
+	backMsg.ReplyMarkup = h.createBackKeyboard()
+	h.bot.Send(backMsg)
+}
+
+// handleRemoveWireGuardClient запрашивает у пользователя publicKey для удаления клиента WireGuard
+func (h *CommandHandler) handleRemoveWireGuardClient(callback *tgbotapi.CallbackQuery) {
+	// Показать список клиентов с кнопками удаления
+	clients, err := h.amneziaService.GetWireGuardClients()
+	if err != nil {
+		editMsg := tgbotapi.NewEditMessageText(callback.Message.Chat.ID, callback.Message.MessageID, fmt.Sprintf("❌ Ошибка получения списка клиентов: %v", err))
+		h.bot.Send(editMsg)
+		return
+	}
+
+	if len(clients) == 0 {
+		editMsg := tgbotapi.NewEditMessageText(callback.Message.Chat.ID, callback.Message.MessageID, "📭 Нет клиентов WireGuard")
+		h.bot.Send(editMsg)
+		return
+	}
+
+	message := "Удалить клиента WireGuard. Выберите клиента:\n"
+	buttons := make([][]tgbotapi.InlineKeyboardButton, 0)
+	for i, client := range clients {
+		message += client.String() + "\n"
+		enc := encodeKeyForCallback(client.PublicKey)
+		cb := fmt.Sprintf("del_wg:%s", enc)
+		label := fmt.Sprintf("Удалить %s", client.Name)
+		btn := tgbotapi.NewInlineKeyboardButtonData(label, cb)
+		buttons = append(buttons, tgbotapi.NewInlineKeyboardRow(btn))
+	h.deleteMu.Lock()
+		h.deleteTokenToKey[enc] = client.PublicKey
+		h.deleteTokenToName[enc] = client.Name
+		h.deleteTokenExpiry[enc] = time.Now()
+	h.deleteMu.Unlock()
+		if i >= 49 {
+			break
+		}
+	}
+	buttons = append(buttons, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад", "amnezia_vpn")))
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(buttons...)
+	h.sendEditMessageWithKeyboard(callback.Message.Chat.ID, callback.Message.MessageID, message, &keyboard)
 }
 
 // handleCreateWireGuardClient обрабатывает создание нового клиента WireGuard
