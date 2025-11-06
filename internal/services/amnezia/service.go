@@ -13,15 +13,8 @@ import (
 	"time"
 
 	"tgbot/internal/services/docker"
+	"tgbot/pkg/logger"
 )
-
-// maskKey возвращает укороченную версию ключа для логов (без полного раскрытия)
-func maskKey(k string) string {
-	if len(k) <= 12 {
-		return k
-	}
-	return k[:6] + "..." + k[len(k)-4:]
-}
 
 // DockerManager интерфейс для работы с Docker
 type DockerManager interface {
@@ -78,37 +71,182 @@ func (wgc WireGuardClient) String() string {
 type Service struct {
 	dockerManager DockerManager
 	mu            sync.Mutex
+	serverConfig  *ServerConfig
+}
+
+// ServerConfig структура для хранения параметров сервера Amnezia
+type ServerConfig struct {
+	Hostname           string
+	Port               int
+	ServerPubKey       string
+	MTU                string
+	PersistentKeepalive string
+	DNS1               string
+	DNS2               string
+	Obfuscation        map[string]string
 }
 
 // NewService создает новый сервис Amnezia VPN
-func NewService(dockerManager DockerManager) *Service {
-	return &Service{
+func NewService(dockerManager DockerManager) (*Service, error) {
+	service := &Service{
 		dockerManager: dockerManager,
 	}
+	
+	// Получаем реальную конфигурацию сервера из контейнера
+	if err := service.updateServerConfigFromContainer(); err != nil {
+		logger.Log(logger.Error, "amnezia.failed_to_load_server_config", map[string]interface{}{"error": err.Error()})
+		return nil, fmt.Errorf("не удалось загрузить конфигурацию сервера: %v", err)
+	}
+	
+	return service, nil
 }
 
 // Defaults and constants used when server config can't be read
 var defaultObfuscation = map[string]string{
-	"H1":   "990542262",
-	"H2":   "585238767",
-	"H3":   "1758137553",
-	"H4":   "1885521486",
-	"Jc":   "2",
-	"Jmax": "50",
-	"Jmin": "10",
-	"S1":   "66",
-	"S2":   "99",
+	"H1":   "000000000",
+	"H2":   "000000000",
+	"H3":   "000000000",
+	"H4":   "000000000",
+	"Jc":   "0",
+	"Jmax": "0",
+	"Jmin": "0",
+	"S1":   "0",
+	"S2":   "0",
 }
 
 const (
-	defaultHostName            = "bugz1.online"
-	defaultPort                = 31662
-	defaultMTU                 = "1376"
-	defaultPersistentKeepAlive = "25"
-	defaultDNS1                = "8.8.8.8"
-	defaultDNS2                = "8.8.4.4"
-	defaultServerPubKey        = "+OQy7FAMYVOSRxYyk3CkyLzCX7bmogbdq1qubpMf1i4="
+	defaultHostName            = "localhost"
+	defaultPort                = 0
+	defaultMTU                 = "0"
+	defaultPersistentKeepAlive = "0"
+	defaultDNS1                = "0.0.0.0"
+	defaultDNS2                = "0.0.0.0"
+	defaultServerPubKey        = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 )
+
+// defaultServerConfig возвращает конфигурацию сервера по умолчанию
+func defaultServerConfig() *ServerConfig {
+	return &ServerConfig{
+		Hostname:            defaultHostName,
+		Port:                defaultPort,
+		ServerPubKey:        defaultServerPubKey,
+		MTU:                 defaultMTU,
+		PersistentKeepalive: defaultPersistentKeepAlive,
+		DNS1:                defaultDNS1,
+		DNS2:                defaultDNS2,
+		Obfuscation:         defaultObfuscation,
+	}
+}
+
+// updateServerConfigFromContainer обновляет конфигурацию сервера из файла wg0.conf в контейнере
+func (s *Service) updateServerConfigFromContainer() error {
+	// Читаем файл wg0.conf из контейнера amnezia-awg
+	wgConfigOutput, err := s.dockerManager.ReadFileFromContainer("amnezia-awg", "/opt/amnezia/awg/wg0.conf")
+	if err != nil {
+		return fmt.Errorf("ошибка получения конфигурации WireGuard: %v", err)
+	}
+	
+	// Парсим конфигурацию сервера из файла
+	serverConfig, err := s.parseServerConfig(wgConfigOutput)
+	if err != nil {
+		return fmt.Errorf("ошибка парсинга конфигурации сервера: %v", err)
+	}
+	
+	// Обновляем конфигурацию сервера в сервисе
+	s.serverConfig = serverConfig
+	
+	return nil
+}
+
+// parseServerConfig парсит конфигурацию сервера из содержимого файла wg0.conf
+func (s *Service) parseServerConfig(config string) (*ServerConfig, error) {
+	lines := strings.Split(config, "\n")
+	serverConfig := defaultServerConfig()
+	
+	// Извлекаем параметры из секции [Interface]
+	inInterfaceSection := false
+	for _, line := range lines {
+		trimmedLine := strings.TrimSpace(line)
+		
+		// Определяем начало секции [Interface]
+		if trimmedLine == "[Interface]" {
+			inInterfaceSection = true
+			continue
+		}
+		
+		// Если мы вышли из секции [Interface], прекращаем обработку
+		if strings.HasPrefix(trimmedLine, "[") && inInterfaceSection {
+			break
+		}
+		
+		// Обрабатываем параметры в секции [Interface]
+		if inInterfaceSection {
+			// Извлекаем параметры obfuscation
+			if strings.HasPrefix(trimmedLine, "Jc =") || strings.HasPrefix(trimmedLine, "Jmin =") ||
+				strings.HasPrefix(trimmedLine, "Jmax =") || strings.HasPrefix(trimmedLine, "S1 =") ||
+				strings.HasPrefix(trimmedLine, "S2 =") || strings.HasPrefix(trimmedLine, "H1 =") ||
+				strings.HasPrefix(trimmedLine, "H2 =") || strings.HasPrefix(trimmedLine, "H3 =") ||
+				strings.HasPrefix(trimmedLine, "H4 =") {
+				parts := strings.Split(trimmedLine, "=")
+				if len(parts) == 2 {
+					key := strings.TrimSpace(parts[0])
+					value := strings.TrimSpace(parts[1])
+					serverConfig.Obfuscation[key] = value
+				}
+				continue
+			}
+			
+			// Извлекаем порт из ListenPort
+			if strings.HasPrefix(trimmedLine, "ListenPort =") {
+				parts := strings.Split(trimmedLine, "=")
+				if len(parts) == 2 {
+					portStr := strings.TrimSpace(parts[1])
+					if port, err := fmt.Sscanf(portStr, "%d", &serverConfig.Port); err != nil || port != 1 {
+						// Если не удалось распарсить порт, используем значение по умолчанию
+						serverConfig.Port = defaultPort
+					}
+				}
+				continue
+			}
+			
+			// Извлекаем PublicKey сервера
+			if strings.HasPrefix(trimmedLine, "PublicKey =") {
+				parts := strings.Split(trimmedLine, "=")
+				if len(parts) == 2 {
+					serverConfig.ServerPubKey = strings.TrimSpace(parts[1])
+				}
+				continue
+			}
+		}
+		
+		// Извлекаем параметры из первой секции [Peer] (сервер как peer)
+		if trimmedLine == "[Peer]" {
+			// Продолжаем обработку для извлечения Endpoint
+			continue
+		}
+		
+		// Извлекаем Endpoint (Hostname:Port)
+		if strings.HasPrefix(trimmedLine, "Endpoint =") {
+			parts := strings.Split(trimmedLine, "=")
+			if len(parts) == 2 {
+				endpoint := strings.TrimSpace(parts[1])
+				// Разделяем hostname и port
+				endpointParts := strings.Split(endpoint, ":")
+				if len(endpointParts) == 2 {
+					serverConfig.Hostname = endpointParts[0]
+					if port, err := fmt.Sscanf(endpointParts[1], "%d", &serverConfig.Port); err != nil || port != 1 {
+						// Если не удалось распарсить порт, используем значение по умолчанию
+						serverConfig.Port = defaultPort
+					}
+				}
+			}
+			// После извлечения Endpoint прекращаем обработку
+			break
+		}
+	}
+	
+	return serverConfig, nil
+}
 
 // encodeVPNPayload compresses jsonData with zlib, prefixes a 4-byte big-endian length header,
 // encodes with URL-safe base64 without padding and returns a vpn:// URL string.
@@ -152,7 +290,7 @@ func (s *Service) buildAmneziaConfigJSON(obf map[string]string, clientName, priv
 			params[k] = v
 		}
 	}
-
+	
 	lastConfig := map[string]interface{}{
 		"H1":   params["H1"],
 		"H2":   params["H2"],
@@ -172,14 +310,14 @@ func (s *Service) buildAmneziaConfigJSON(obf map[string]string, clientName, priv
 		"client_priv_key":       privateKey,
 		"client_pub_key":        publicKey,
 		"config":                s.createWireGuardConfig(privateKey, publicKey, presharedKey, allowedIPs),
-		"hostName":              defaultHostName,
-		"mtu":                   defaultMTU,
-		"persistent_keep_alive": defaultPersistentKeepAlive,
-		"port":                  defaultPort,
+		"hostName":              s.serverConfig.Hostname,
+		"mtu":                   s.serverConfig.MTU,
+		"persistent_keep_alive": s.serverConfig.PersistentKeepalive,
+		"port":                  s.serverConfig.Port,
 		"psk_key":               presharedKey,
-		"server_pub_key":        defaultServerPubKey,
+		"server_pub_key":        s.serverConfig.ServerPubKey,
 	}
-
+	
 	// top-level config
 	config := map[string]interface{}{
 		"containers": []map[string]interface{}{
@@ -195,7 +333,7 @@ func (s *Service) buildAmneziaConfigJSON(obf map[string]string, clientName, priv
 					"S1":              params["S1"],
 					"S2":              params["S2"],
 					"last_config":     string(mustMarshalJSON(lastConfig)),
-					"port":            fmt.Sprintf("%d", defaultPort),
+					"port":            fmt.Sprintf("%d", s.serverConfig.Port),
 					"transport_proto": "udp",
 				},
 				"container": "amnezia-awg",
@@ -203,11 +341,11 @@ func (s *Service) buildAmneziaConfigJSON(obf map[string]string, clientName, priv
 		},
 		"defaultContainer": "amnezia-awg",
 		"description":      clientName,
-		"dns1":             defaultDNS1,
-		"dns2":             defaultDNS2,
-		"hostName":         defaultHostName,
+		"dns1":             s.serverConfig.DNS1,
+		"dns2":             s.serverConfig.DNS2,
+		"hostName":         s.serverConfig.Hostname,
 	}
-
+	
 	return json.Marshal(config)
 }
 
@@ -223,7 +361,7 @@ func mustMarshalJSON(v interface{}) []byte {
 // writeFileToContainer записывает содержимое content в filePath внутри контейнера containerName.
 // Используется base64-encoding, чтобы избежать проблем с оболочкой и экранированием при больших
 // или произвольных данных (апострофы, переводы строк и т.д.).
-// writeFileToContainer was replaced by copy-edit-copy flow and removed.
+// writeFileToContainer был заменен потоком копирования-редактирования-копирования и удален.
 
 // GetWireGuardClients получает список клиентов WireGuard из контейнера amnezia-awg
 func (s *Service) GetWireGuardClients() ([]WireGuardClient, error) {
@@ -569,6 +707,7 @@ func (s *Service) formatHandshakeTime(handshakeInfo string) string {
 func (s *Service) CreateWireGuardClient(clientName string) (string, string, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	
 	// Генерируем ключи для нового клиента
 	privateKeyOutput, err := s.dockerManager.ExecuteCommandInContainer("amnezia-awg", "wg", "genkey")
 	if err != nil {
@@ -595,6 +734,23 @@ func (s *Service) CreateWireGuardClient(clientName string) (string, string, stri
 	}
 
 	awgDir := filepath.Join(tmpDir, "awg")
+	clientsTablePath := filepath.Join(awgDir, "clientsTable")
+	wgPath := filepath.Join(awgDir, "wg0.conf")
+
+	// Создаем резервные копии файлов перед изменением
+	if err := s.backupConfigFiles(awgDir); err != nil {
+		return "", "", "", fmt.Errorf("ошибка создания резервных копий: %v", err)
+	}
+
+	// Отложенная функция для rollback в случае ошибки
+	defer func() {
+		if err != nil {
+			logger.Log(logger.Error, "amnezia.create_client_failed", logger.MaskSensitiveFields(map[string]interface{}{"error": err.Error()}))
+			if rollbackErr := s.rollbackConfigFiles(awgDir); rollbackErr != nil {
+				logger.Log(logger.Error, "amnezia.rollback_failed", logger.MaskSensitiveFields(map[string]interface{}{"error": rollbackErr.Error()}))
+			}
+		}
+	}()
 
 	// Получаем preshared key и clientsTable локально
 	presharedKeyBytes, err := os.ReadFile(filepath.Join(awgDir, "wireguard_psk.key"))
@@ -603,7 +759,7 @@ func (s *Service) CreateWireGuardClient(clientName string) (string, string, stri
 	}
 	presharedKey := strings.TrimSpace(string(presharedKeyBytes))
 
-	clientsTableBytes, err := os.ReadFile(filepath.Join(awgDir, "clientsTable"))
+	clientsTableBytes, err := os.ReadFile(clientsTablePath)
 	if err != nil {
 		return "", "", "", fmt.Errorf("ошибка чтения локального clientsTable: %v", err)
 	}
@@ -637,7 +793,6 @@ func (s *Service) CreateWireGuardClient(clientName string) (string, string, stri
 	}
 
 	// Записываем обновленный clientsTable локально
-	clientsTablePath := filepath.Join(awgDir, "clientsTable")
 	if err = os.WriteFile(clientsTablePath, updatedClientsTable, 0644); err != nil {
 		return "", "", "", fmt.Errorf("ошибка записи локального clientsTable: %v", err)
 	}
@@ -653,9 +808,13 @@ func (s *Service) CreateWireGuardClient(clientName string) (string, string, stri
 	updatedWgConfig := wgConfig + newPeerConfig
 
 	// Записываем обновленную конфигурацию локально
-	wgPath := filepath.Join(awgDir, "wg0.conf")
 	if err = os.WriteFile(wgPath, []byte(updatedWgConfig), 0644); err != nil {
 		return "", "", "", fmt.Errorf("ошибка записи локального wg0.conf: %v", err)
+	}
+
+	// Валидируем измененные файлы
+	if err := s.validateConfigFiles(awgDir); err != nil {
+		return "", "", "", fmt.Errorf("ошибка валидации конфигурационных файлов: %v", err)
 	}
 
 	// Копируем изменённые файлы обратно в контейнер
@@ -705,6 +864,145 @@ func (s *Service) restartWireGuard() error {
 	}
 
 	return nil
+}
+
+// backupConfigFiles создает резервные копии файлов конфигурации
+func (s *Service) backupConfigFiles(awgDir string) error {
+	clientsPath := filepath.Join(awgDir, "clientsTable")
+	wgPath := filepath.Join(awgDir, "wg0.conf")
+	
+	// Создаем резервную копию clientsTable
+	clientsBytes, err := os.ReadFile(clientsPath)
+	if err != nil {
+		return fmt.Errorf("ошибка чтения clientsTable для резервного копирования: %v", err)
+	}
+	
+	if err := os.WriteFile(clientsPath+".backup", clientsBytes, 0644); err != nil {
+		return fmt.Errorf("ошибка создания резервной копии clientsTable: %v", err)
+	}
+	
+	// Создаем резервную копию wg0.conf
+	wgBytes, err := os.ReadFile(wgPath)
+	if err != nil {
+		return fmt.Errorf("ошибка чтения wg0.conf для резервного копирования: %v", err)
+	}
+	
+	if err := os.WriteFile(wgPath+".backup", wgBytes, 0644); err != nil {
+		return fmt.Errorf("ошибка создания резервной копии wg0.conf: %v", err)
+	}
+	
+	logger.Log(logger.Info, "amnezia.backup_created", logger.MaskSensitiveFields(map[string]interface{}{
+		"clientsTable": clientsPath + ".backup",
+		"wg0Conf": wgPath + ".backup",
+	}))
+	
+	return nil
+}
+
+// rollbackConfigFiles восстанавливает файлы конфигурации из резервных копий
+func (s *Service) rollbackConfigFiles(awgDir string) error {
+	clientsPath := filepath.Join(awgDir, "clientsTable")
+	wgPath := filepath.Join(awgDir, "wg0.conf")
+	
+	// Восстанавливаем clientsTable из резервной копии
+	clientsBackupBytes, err := os.ReadFile(clientsPath + ".backup")
+	if err != nil {
+		return fmt.Errorf("ошибка чтения резервной копии clientsTable: %v", err)
+	}
+	
+	if err := os.WriteFile(clientsPath, clientsBackupBytes, 0644); err != nil {
+		return fmt.Errorf("ошибка восстановления clientsTable из резервной копии: %v", err)
+	}
+	
+	// Восстанавливаем wg0.conf из резервной копии
+	wgBackupBytes, err := os.ReadFile(wgPath + ".backup")
+	if err != nil {
+		return fmt.Errorf("ошибка чтения резервной копии wg0.conf: %v", err)
+	}
+	
+	if err := os.WriteFile(wgPath, wgBackupBytes, 0644); err != nil {
+		return fmt.Errorf("ошибка восстановления wg0.conf из резервной копии: %v", err)
+	}
+	
+	logger.Log(logger.Info, "amnezia.rollback_completed", logger.MaskSensitiveFields(map[string]interface{}{
+		"clientsTable": clientsPath,
+		"wg0Conf": wgPath,
+	}))
+	
+	return nil
+}
+
+// validateConfigFiles проверяет валидность файлов конфигурации
+func (s *Service) validateConfigFiles(awgDir string) error {
+	clientsPath := filepath.Join(awgDir, "clientsTable")
+	wgPath := filepath.Join(awgDir, "wg0.conf")
+	
+	// Проверяем валидность JSON в clientsTable
+	clientsBytes, err := os.ReadFile(clientsPath)
+	if err != nil {
+		return fmt.Errorf("ошибка чтения clientsTable для валидации: %v", err)
+	}
+	
+	if !json.Valid(clientsBytes) {
+		return fmt.Errorf("clientsTable содержит некорректный JSON")
+	}
+	
+	// Проверяем структуру clientsTable
+	var clientsInfo []ClientInfo
+	if err := json.Unmarshal(clientsBytes, &clientsInfo); err != nil {
+		return fmt.Errorf("ошибка парсинга clientsTable: %v", err)
+	}
+	
+	// Проверяем синтаксис wg0.conf (простая проверка на наличие секций)
+	wgBytes, err := os.ReadFile(wgPath)
+	if err != nil {
+		return fmt.Errorf("ошибка чтения wg0.conf для валидации: %v", err)
+	}
+	
+	wgText := string(wgBytes)
+	if !strings.Contains(wgText, "[Interface]") {
+		return fmt.Errorf("wg0.conf не содержит секцию [Interface]")
+	}
+	
+	logger.Log(logger.Info, "amnezia.config_validation_passed", logger.MaskSensitiveFields(map[string]interface{}{
+		"clientsTable": clientsPath,
+		"wg0Conf": wgPath,
+	}))
+	
+	return nil
+}
+
+// BackupConfigFiles создает резервные копии файлов конфигурации
+func (s *Service) BackupConfigFiles(awgDir string) error {
+	return s.backupConfigFiles(awgDir)
+}
+
+// RollbackConfigFiles восстанавливает файлы конфигурации из резервных копий
+func (s *Service) RollbackConfigFiles(awgDir string) error {
+	return s.rollbackConfigFiles(awgDir)
+}
+
+// ValidateConfigFiles проверяет валидность файлов конфигурации
+func (s *Service) ValidateConfigFiles(awgDir string) error {
+	return s.validateConfigFiles(awgDir)
+}
+
+// RestartWireGuard перезапускает WireGuard сервис в контейнере
+func (s *Service) RestartWireGuard() error {
+	return s.restartWireGuard()
+}
+
+// GetDockerManager возвращает менеджер Docker
+func (s *Service) GetDockerManager() DockerManager {
+	return s.dockerManager
+}
+
+// UpdateServerConfig обновляет конфигурацию сервера из файла wg0.conf в контейнере
+func (s *Service) UpdateServerConfig() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	
+	return s.updateServerConfigFromContainer()
 }
 
 // extractObfuscationParamsFromConfig извлекает параметры obfuscation из конфигурации
@@ -757,21 +1055,14 @@ func (s *Service) createAmneziaVPNConfig(clientName, privateKey, publicKey, pres
 
 // createAmneziaWGTextConfig создает конфигурацию в формате AmneziaWG (текстовая)
 func (s *Service) createAmneziaWGTextConfig(privateKey, publicKey, presharedKey, allowedIPs string) (string, error) {
-	// Получаем параметры obfuscation из серверной конфигурации
-	wgConfig, err := s.dockerManager.ReadFileFromContainer("amnezia-awg", "/opt/amnezia/awg/wg0.conf")
-	if err != nil {
-		return "", fmt.Errorf("ошибка чтения wg0.conf из контейнера: %v", err)
-	}
-	obf := s.extractObfuscationParamsFromConfig(wgConfig)
-
 	// Берем параметры или дефолты
 	get := func(k string) string {
-		if v := obf[k]; v != "" {
+		if v := s.serverConfig.Obfuscation[k]; v != "" {
 			return v
 		}
 		return defaultObfuscation[k]
 	}
-
+	
 	jc := get("Jc")
 	jmin := get("Jmin")
 	jmax := get("Jmax")
@@ -781,7 +1072,7 @@ func (s *Service) createAmneziaWGTextConfig(privateKey, publicKey, presharedKey,
 	h2 := get("H2")
 	h3 := get("H3")
 	h4 := get("H4")
-
+	
 	return fmt.Sprintf(`[Interface]
 Address = %s
 DNS = %s, %s
@@ -801,7 +1092,7 @@ PublicKey = %s
 PresharedKey = %s
 AllowedIPs = 0.0.0.0/0, ::/0
 Endpoint = %s:%d
-PersistentKeepalive = %s`, allowedIPs, defaultDNS1, defaultDNS2, privateKey, jc, jmin, jmax, s1, s2, h1, h2, h3, h4, publicKey, presharedKey, defaultHostName, defaultPort, defaultPersistentKeepAlive), nil
+PersistentKeepalive = %s`, allowedIPs, s.serverConfig.DNS1, s.serverConfig.DNS2, privateKey, jc, jmin, jmax, s1, s2, h1, h2, h3, h4, publicKey, presharedKey, s.serverConfig.Hostname, s.serverConfig.Port, s.serverConfig.PersistentKeepalive), nil
 }
 
 // GetWireGuardStatus получает статус WireGuard интерфейса
@@ -826,8 +1117,8 @@ DNS = 1.1.1.1
 PublicKey = %s
 PresharedKey = %s
 AllowedIPs = 0.0.0.0/0
-Endpoint = bugz1.online:31662
-PersistentKeepalive = 25`, privateKey, allowedIPs, publicKey, presharedKey)
+Endpoint = %s:%d
+PersistentKeepalive = %s`, privateKey, allowedIPs, publicKey, presharedKey, s.serverConfig.Hostname, s.serverConfig.Port, s.serverConfig.PersistentKeepalive)
 }
 
 // RemoveWireGuardClient удаляет клиента WireGuard по его PublicKey.
@@ -851,6 +1142,21 @@ func (s *Service) RemoveWireGuardClient(publicKey string) error {
 	awgDir := filepath.Join(tmpDir, "awg")
 	clientsPath := filepath.Join(awgDir, "clientsTable")
 	wgPath := filepath.Join(awgDir, "wg0.conf")
+
+	// Создаем резервные копии файлов перед изменением
+	if err := s.backupConfigFiles(awgDir); err != nil {
+		return fmt.Errorf("ошибка создания резервных копий: %v", err)
+	}
+
+	// Отложенная функция для rollback в случае ошибки
+	defer func() {
+		if err != nil {
+			logger.Log(logger.Error, "amnezia.remove_client_failed", logger.MaskSensitiveFields(map[string]interface{}{"error": err.Error()}))
+			if rollbackErr := s.rollbackConfigFiles(awgDir); rollbackErr != nil {
+				logger.Log(logger.Error, "amnezia.rollback_failed", logger.MaskSensitiveFields(map[string]interface{}{"error": rollbackErr.Error()}))
+			}
+		}
+	}()
 
 	// Читаем clientsTable
 	clientsBytes, err := os.ReadFile(clientsPath)
@@ -904,7 +1210,7 @@ func (s *Service) RemoveWireGuardClient(publicKey string) error {
 
 	// Диагностический лог: сколько блоков [Peer] найдено до операции
 	beforeBlocksCount := strings.Count(wgText, "[Peer]")
-	fmt.Printf("[amnezia] RemoveWireGuardClient start publicKey=%s peer_blocks_before=%d\n", maskKey(publicKey), beforeBlocksCount)
+	logger.Log(logger.Info, "amnezia.remove_start", logger.MaskSensitiveFields(map[string]interface{}{"publicKey": logger.MaskKey(publicKey), "peer_blocks_before": beforeBlocksCount}))
 
 	// Парсим блоки построчно: собираем блоки между [Peer] и следующей секцией
 	lines := strings.Split(wgText, "\n")
@@ -956,7 +1262,7 @@ func (s *Service) RemoveWireGuardClient(publicKey string) error {
 
 	// Проверка: убедимся, что точная строка 'PublicKey = <publicKey>' больше не встречается в результирующем тексте
 	if strings.Contains(newWg, "PublicKey = "+publicKey) || strings.Contains(newWg, "PublicKey="+publicKey) {
-		fmt.Printf("[amnezia] RemoveWireGuardClient failed publicKey=%s still present after removal\n", maskKey(publicKey))
+		logger.Log(logger.Error, "amnezia.remove_failed_still_present", logger.MaskSensitiveFields(map[string]interface{}{"publicKey": logger.MaskKey(publicKey)}))
 		return fmt.Errorf("не удалось удалить PublicKey %s из wg0.conf", publicKey)
 	}
 
@@ -964,9 +1270,14 @@ func (s *Service) RemoveWireGuardClient(publicKey string) error {
 		return fmt.Errorf("ошибка записи локального wg0.conf: %v", err)
 	}
 
+	// Валидируем измененные файлы
+	if err := s.validateConfigFiles(awgDir); err != nil {
+		return fmt.Errorf("ошибка валидации конфигурационных файлов: %v", err)
+	}
+
 	afterBlocksCount := strings.Count(newWg, "[Peer]")
 	removedCount := beforeBlocksCount - afterBlocksCount
-	fmt.Printf("[amnezia] RemoveWireGuardClient publicKey=%s removed_blocks=%d\n", maskKey(publicKey), removedCount)
+	logger.Log(logger.Info, "amnezia.remove_done", logger.MaskSensitiveFields(map[string]interface{}{"publicKey": logger.MaskKey(publicKey), "removed_blocks": removedCount}))
 
 	// Копируем файлы обратно в контейнер
 	if err := s.dockerManager.CopyToContainer("amnezia-awg", clientsPath, "/opt/amnezia/awg/clientsTable"); err != nil {
