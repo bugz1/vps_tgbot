@@ -27,7 +27,6 @@ go.work
 
 # Configuration files containing sensitive information
 config.yaml
-todo.md
 deploy.sh
 
 # Build outputs
