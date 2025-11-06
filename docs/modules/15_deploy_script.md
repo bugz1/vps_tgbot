@@ -175,9 +175,9 @@ graph TD
     A --> C[config-server.yaml]
     A --> D[SSH соединение]
     D --> E[Удаленный сервер]
-    E --> F[/usr/local/bin/server-bot]
-    E --> G[/etc/server-bot.yaml]
-    E --> H[/etc/systemd/system/server-bot.service]
+    E --> F["/usr/local/bin/server-bot"]
+    E --> G["/etc/server-bot.yaml"]
+    E --> H["/etc/systemd/system/server-bot.service"]
     E --> I[systemd]
     
     I --> J[server-bot service]
