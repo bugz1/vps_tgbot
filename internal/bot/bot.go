@@ -1,13 +1,15 @@
 package bot
 
 import (
-	"log"
-
+	"fmt"
 	"tgbot/internal/handlers"
+	"tgbot/internal/password"
 	"tgbot/internal/services/amnezia"
 	"tgbot/internal/services/docker"
 	"tgbot/internal/services/system"
+	"tgbot/internal/workerpool"
 	"tgbot/pkg/config"
+	"tgbot/pkg/logger"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
 )
@@ -20,10 +22,12 @@ type Bot struct {
 	systemService  *system.Monitor
 	dockerService  *docker.Manager
 	amneziaService *amnezia.Service
+	workerPool     *workerpool.WorkerPool
+	passwordRequester *password.Requester
 }
 
 // NewBot создает нового бота
-func NewBot(cfg *config.Config) (*Bot, error) {
+func NewBot(cfg *config.Config, workerPool *workerpool.WorkerPool) (*Bot, error) {
 	// Создание API клиента
 	api, err := tgbotapi.NewBotAPI(cfg.Bot.Token)
 	if err != nil {
@@ -31,20 +35,26 @@ func NewBot(cfg *config.Config) (*Bot, error) {
 	}
 
 	// Вывод информации о боте
-	log.Printf("Авторизован как %s", api.Self.UserName)
+	logger.Log(logger.Info, "bot.authorized", map[string]interface{}{"username": api.Self.UserName})
 
 	// Создание сервисов
 	systemService := system.NewMonitor()
-	dockerService, err := docker.NewManager(cfg.Docker.Socket, cfg.Docker.Timeout)
+	dockerService, err := docker.NewManager(cfg.Docker.Socket, cfg.Docker.Timeout, cfg.Docker.Bin, cfg.Docker.CommandPrefix)
 	if err != nil {
 		return nil, err
 	}
 
 	// Создание сервиса Amnezia VPN
-	amneziaService := amnezia.NewService(dockerService)
+	amneziaService, err := amnezia.NewService(dockerService)
+	if err != nil {
+		return nil, fmt.Errorf("ошибка создания сервиса Amnezia VPN: %v", err)
+	}
 
-	// Создание обработчика команд
-	commandHandler := handlers.NewCommandHandler(api, systemService, dockerService, amneziaService)
+	// Создание Requester для запроса пароля через Telegram
+	passwordRequester := password.NewRequester(api)
+
+	// Создание обработчика команд с передачей workerPool и passwordRequester
+	commandHandler := handlers.NewCommandHandler(api, systemService, dockerService, amneziaService, workerPool, passwordRequester)
 
 	return &Bot{
 		api:            api,
@@ -53,6 +63,8 @@ func NewBot(cfg *config.Config) (*Bot, error) {
 		systemService:  systemService,
 		dockerService:  dockerService,
 		amneziaService: amneziaService,
+		workerPool:     workerPool,
+		passwordRequester: passwordRequester,
 	}, nil
 }
 
@@ -76,6 +88,7 @@ func (b *Bot) Start() error {
 				continue
 			}
 
+
 			// Обработка команд
 			b.commandHandler.HandleCommand(update)
 		} else if update.CallbackQuery != nil {
@@ -84,8 +97,17 @@ func (b *Bot) Start() error {
 				continue
 			}
 
+
 			// Обработка callback запросов
 			b.handleCallback(update)
+		} else if update.Message != nil && update.Message.Text != "" {
+			// Проверка, является ли сообщение ответом на запрос пароля
+			// Это сообщение от авторизованного пользователя, который ввел пароль
+			if b.isAuthorized(update.Message.Chat.ID) {
+				// Проверяем, ожидаем ли мы ввод пароля от этого пользователя
+				// Отправляем пароль в passwordRequester
+				b.passwordRequester.SetPassword(update.Message.Chat.ID, update.Message.Text)
+			}
 		}
 	}
 

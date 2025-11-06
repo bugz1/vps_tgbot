@@ -1,11 +1,14 @@
 package system
 
 import (
+	"context"
 	"fmt"
 	"math"
-	"os/exec"
 	"sort"
 	"strings"
+	"time"
+
+	"tgbot/internal/cmdrunner"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/shirou/gopsutil/v3/cpu"
@@ -194,40 +197,78 @@ func bytesToGB(bytes uint64) float64 {
 
 // Reboot перезагружает сервер
 func (m *Monitor) Reboot() error {
-	cmd := exec.Command("sudo", "reboot")
-	return cmd.Run()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	parts := []string{"sudo", "reboot"}
+	opts := cmdrunner.RunOptions{
+		Timeout: 10 * time.Second,
+		Attempts: 1,
+		PasswordFromConfig: true,
+	}
+	if _, err := cmdrunner.RunWithRetries(ctx, parts, opts); err != nil {
+		return err
+	}
+	return nil
 }
 
 // Shutdown выключает сервер
 func (m *Monitor) Shutdown() error {
-	cmd := exec.Command("sudo", "shutdown", "-h", "now")
-	return cmd.Run()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	parts := []string{"sudo", "shutdown", "-h", "now"}
+	opts := cmdrunner.RunOptions{
+		Timeout: 10 * time.Second,
+		Attempts: 1,
+		PasswordFromConfig: true,
+	}
+	if _, err := cmdrunner.RunWithRetries(ctx, parts, opts); err != nil {
+		return err
+	}
+	return nil
 }
 
 // CheckUpdates проверяет доступные обновления системы
 func (m *Monitor) CheckUpdates() (string, error) {
-	// Выполняем команду для обновления списка пакетов
-	updateCmd := exec.Command("sudo", "apt", "update")
-	_, err := updateCmd.Output()
-	if err != nil {
+	// Выполняем команду для обновления списка пакетов с таймаутом
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	// apt update
+	parts := []string{"sudo", "apt", "update"}
+	opts := cmdrunner.RunOptions{
+		Timeout: 2 * time.Minute,
+		Attempts: 1,
+		PasswordFromConfig: true,
+	}
+	if _, err := cmdrunner.RunWithRetries(ctx, parts, opts); err != nil {
 		return "", fmt.Errorf("ошибка обновления списка пакетов: %v", err)
 	}
 
-	// Выполняем команду для проверки доступных обновлений
-	cmd := exec.Command("sudo", "apt", "list", "--upgradable")
-	output, err := cmd.Output()
+	// apt list --upgradable
+	parts = []string{"sudo", "apt", "list", "--upgradable"}
+	out, err := cmdrunner.RunWithRetries(ctx, parts, opts)
 	if err != nil {
 		return "", fmt.Errorf("ошибка проверки обновлений: %v", err)
 	}
 
-	return string(output), nil
+	return out, nil
 }
 
 // UpgradeSystem обновляет систему
 func (m *Monitor) UpgradeSystem() error {
-	// Выполняем команду для обновления системы
-	cmd := exec.Command("sudo", "apt", "upgrade", "-y")
-	return cmd.Run()
+	// Выполняем команду для обновления системы с длительным таймаутом
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	parts := []string{"sudo", "apt", "upgrade", "-y"}
+	opts := cmdrunner.RunOptions{
+		Timeout: 10 * time.Minute,
+		Attempts: 1,
+		PasswordFromConfig: true,
+	}
+	if _, err := cmdrunner.RunWithRetries(ctx, parts, opts); err != nil {
+		return err
+	}
+	return nil
 }
 
 // ServiceStatus представляет информацию о сервисе с цветовым индикатором статуса
@@ -303,13 +344,18 @@ func (m *Monitor) GetServices() ([]ServiceStatus, error) {
 
 // getServicesFallback получает список сервисов через вызов systemctl (fallback метод)
 func (m *Monitor) getServicesFallback() ([]ServiceStatus, error) {
-	cmd := exec.Command("sudo", "systemctl", "list-units", "--type=service", "--no-pager")
-	output, err := cmd.Output()
+	parts := []string{"sudo", "systemctl", "list-units", "--type=service", "--no-pager"}
+	opts := cmdrunner.RunOptions{
+		Timeout: 30 * time.Second,
+		Attempts: 1,
+		PasswordFromConfig: true,
+	}
+	out, err := cmdrunner.RunWithRetries(context.Background(), parts, opts)
 	if err != nil {
 		return nil, fmt.Errorf("ошибка выполнения команды systemctl: %v", err)
 	}
 
-	services := m.parseServicesOutput(string(output))
+	services := m.parseServicesOutput(out)
 	return services, nil
 }
 
@@ -394,11 +440,14 @@ func (m *Monitor) GetServiceStatus(serviceName string) (ServiceStatus, error) {
 
 // getServiceStatusFallback получает статус конкретного сервиса через вызов systemctl (fallback метод)
 func (m *Monitor) getServiceStatusFallback(serviceName string) (ServiceStatus, error) {
-	cmd := exec.Command("sudo", "systemctl", "is-active", serviceName+".service")
-	output, err := cmd.Output()
-
-	// Если команда завершилась с ошибкой, это может означать, что сервис не активен
-	status := strings.TrimSpace(string(output))
+	parts := []string{"sudo", "systemctl", "is-active", serviceName + ".service"}
+	opts := cmdrunner.RunOptions{
+		Timeout: 10 * time.Second,
+		Attempts: 1,
+		PasswordFromConfig: true,
+	}
+	out, err := cmdrunner.RunWithRetries(context.Background(), parts, opts)
+	status := strings.TrimSpace(out)
 	if err != nil {
 		// Проверяем, является ли ошибка результатом неактивного сервиса
 		if status == "inactive" || status == "failed" {

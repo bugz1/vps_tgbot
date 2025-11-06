@@ -2,11 +2,11 @@ package monitoring
 
 import (
 	"fmt"
-	"log"
 	"time"
 
 	"tgbot/internal/services/system"
 	"tgbot/pkg/config"
+	"tgbot/pkg/logger"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
 )
@@ -62,12 +62,13 @@ func (s *Service) checkSystemMetrics() {
 	if s.config.Monitoring.CPUThreshold > 0 {
 		cpuInfo, err := s.systemService.GetCPUInfo()
 		if err != nil {
-			log.Printf("Monitoring: Ошибка получения информации о CPU: %v", err)
+			logger.Log(logger.Error, "monitoring.get_cpu_failed", map[string]interface{}{"error": err.Error()})
 			return
 		}
 
 		if cpuInfo.Load > float64(s.config.Monitoring.CPUThreshold) {
 			message := fmt.Sprintf("⚠️ Высокая нагрузка на CPU: %.2f%% (порог: %d%%)", cpuInfo.Load, s.config.Monitoring.CPUThreshold)
+			logger.Log(logger.Warn, "monitoring.cpu_threshold_exceeded", map[string]interface{}{"load": cpuInfo.Load, "threshold": s.config.Monitoring.CPUThreshold})
 			s.sendNotification(message)
 		}
 	}
@@ -76,12 +77,13 @@ func (s *Service) checkSystemMetrics() {
 	if s.config.Monitoring.MemoryThreshold > 0 {
 		memInfo, err := s.systemService.GetMemoryInfo()
 		if err != nil {
-			log.Printf("Monitoring: Ошибка получения информации о памяти: %v", err)
+			logger.Log(logger.Error, "monitoring.get_memory_failed", map[string]interface{}{"error": err.Error()})
 			return
 		}
 
 		if memInfo.UsedPercent > float64(s.config.Monitoring.MemoryThreshold) {
 			message := fmt.Sprintf("⚠️ Высокое использование памяти: %.2f%% (порог: %d%%)", memInfo.UsedPercent, s.config.Monitoring.MemoryThreshold)
+			logger.Log(logger.Warn, "monitoring.memory_threshold_exceeded", map[string]interface{}{"used_percent": memInfo.UsedPercent, "threshold": s.config.Monitoring.MemoryThreshold})
 			s.sendNotification(message)
 		}
 	}
@@ -90,7 +92,7 @@ func (s *Service) checkSystemMetrics() {
 	if s.config.Monitoring.DiskThreshold > 0 {
 		diskInfos, err := s.systemService.GetDiskInfo()
 		if err != nil {
-			log.Printf("Monitoring: Ошибка получения информации о дисках: %v", err)
+			logger.Log(logger.Error, "monitoring.get_disks_failed", map[string]interface{}{"error": err.Error()})
 			return
 		}
 
@@ -100,6 +102,7 @@ func (s *Service) checkSystemMetrics() {
 			if freePercent < float64(s.config.Monitoring.DiskThreshold) {
 				message := fmt.Sprintf("⚠️ Мало свободного места на диске %s: %.2f%% свободно (порог: %d%%)",
 					diskInfo.MountPoint, freePercent, s.config.Monitoring.DiskThreshold)
+				logger.Log(logger.Warn, "monitoring.disk_threshold_exceeded", map[string]interface{}{"mount": diskInfo.MountPoint, "free_percent": freePercent, "threshold": s.config.Monitoring.DiskThreshold})
 				s.sendNotification(message)
 			}
 		}
@@ -113,7 +116,7 @@ func (s *Service) sendNotification(message string) {
 	if err != nil {
 		// Попытка отправить уведомление об ошибке администратору
 		errorMsg := fmt.Sprintf("❌ Ошибка отправки уведомления: %v\nСообщение: %s", err, message)
-		log.Printf(errorMsg)
+		logger.Log(logger.Error, "monitoring.send_notification_failed", map[string]interface{}{"error": err.Error(), "message": message})
 
 		// Если у нас есть список разрешенных чатов, попробуем отправить в первый из них
 		if len(s.config.Bot.AllowedChats) > 0 {
