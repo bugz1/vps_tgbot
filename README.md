@@ -6,6 +6,8 @@
 
 [Краткая документация разработчика](docs/DEVELOPER_GUIDE.md)
 
+[Настройка Telegram бота](docs/TELEGRAM_BOT_SETUP.md)
+
 [Документация по модулям](docs/modules/README.md)
 
 [Сборка](docs/modules/14_build_script.md)
