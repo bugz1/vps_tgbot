@@ -738,6 +738,7 @@ func (h *CommandHandler) showWireGuardClientsList(callback *tgbotapi.CallbackQue
 		h.bot.Send(editMsg)
 		return
 	}
+	logger.Log(logger.Debug, "handlers.show_wireguard_clients_list.clients", map[string]interface{}{"clients": clients})
 
 	if len(clients) == 0 {
 		message := "📭 Нет клиентов WireGuard"
@@ -751,6 +752,7 @@ func (h *CommandHandler) showWireGuardClientsList(callback *tgbotapi.CallbackQue
 	for _, client := range clients {
 		message += client.String() + "\n"
 	}
+	logger.Log(logger.Debug, "handlers.show_wireguard_clients_list.message", map[string]interface{}{"message": message})
 
 	// Кнопка назад
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(

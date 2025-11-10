@@ -20,6 +20,7 @@ WorkingDirectory=/opt/telegram-bot
 Restart=always
 RestartSec=10
 Environment=CONFIG_PATH=/etc/server-bot.yaml
+Environment=LOG_LEVEL=debug
 
 [Install]
 WantedBy=multi-user.target

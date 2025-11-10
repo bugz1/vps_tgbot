@@ -25,6 +25,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Установка уровня логирования из переменной окружения
+	if logLevel := os.Getenv("LOG_LEVEL"); logLevel != "" {
+		logger.SetLevel(logLevel)
+	}
+
 	// Загрузка конфигурации
 	cfg, err := config.Load()
 	if err != nil {
