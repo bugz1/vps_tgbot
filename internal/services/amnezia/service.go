@@ -58,7 +58,7 @@ type WireGuardClient struct {
 
 // String возвращает строковое представление клиента WireGuard в формате с эмодзи
 func (wgc WireGuardClient) String() string {
-	if wgc.LatestHandshake != "" {
+	if wgc.Active {
 		// Зеленый квадратик для онлайн клиентов
 		return fmt.Sprintf("🟩 %s %s/%s", wgc.Name, wgc.DataReceived, wgc.DataSent)
 	} else {
