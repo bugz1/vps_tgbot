@@ -2,10 +2,10 @@ package main
 
 import (
 	"context"
-	"tgbot/pkg/logger"
 	"os"
 	"os/signal"
 	"syscall"
+	"tgbot/pkg/logger"
 	"time"
 
 	"tgbot/internal/bot"
@@ -25,16 +25,22 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Установка уровня логирования из переменной окружения
-	if logLevel := os.Getenv("LOG_LEVEL"); logLevel != "" {
-		logger.SetLevel(logLevel)
-	}
+	// (лог уровень будет устанавливаться после загрузки cfg: env > cfg.LogLevel)
 
 	// Загрузка конфигурации
 	cfg, err := config.Load()
 	if err != nil {
 		logger.Log(logger.Error, "main.load_config_failed", map[string]interface{}{"error": err.Error()})
 		os.Exit(1)
+	}
+
+	// Установка уровня логирования: сначала из переменной окружения, иначе из cfg.LogLevel
+	logLevel := os.Getenv("LOG_LEVEL")
+	if logLevel == "" {
+		logLevel = cfg.LogLevel
+	}
+	if logLevel != "" {
+		logger.SetLevel(logLevel)
 	}
 
 	// Создание worker pool
@@ -142,6 +148,8 @@ func createDefaultConfig() error {
 	viper.SetDefault("cmdrunner.timeout_seconds", 10)
 	viper.SetDefault("cmdrunner.attempts", 3)
 	viper.SetDefault("cmdrunner.sudo_password", "")
+	// default log level
+	viper.SetDefault("log_level", "info")
 	// workerpool defaults
 	viper.SetDefault("workerpool.workers_count", 5)
 

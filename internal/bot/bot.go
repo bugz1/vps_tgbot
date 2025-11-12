@@ -16,13 +16,13 @@ import (
 
 // Bot основная структура бота
 type Bot struct {
-	api            *tgbotapi.BotAPI
-	config         *config.Config
-	commandHandler *handlers.CommandHandler
-	systemService  *system.Monitor
-	dockerService  *docker.Manager
-	amneziaService *amnezia.Service
-	workerPool     *workerpool.WorkerPool
+	api               *tgbotapi.BotAPI
+	config            *config.Config
+	commandHandler    *handlers.CommandHandler
+	systemService     *system.Monitor
+	dockerService     *docker.Manager
+	amneziaService    *amnezia.Service
+	workerPool        *workerpool.WorkerPool
 	passwordRequester *password.Requester
 }
 
@@ -57,13 +57,13 @@ func NewBot(cfg *config.Config, workerPool *workerpool.WorkerPool) (*Bot, error)
 	commandHandler := handlers.NewCommandHandler(api, systemService, dockerService, amneziaService, workerPool, passwordRequester)
 
 	return &Bot{
-		api:            api,
-		config:         cfg,
-		commandHandler: commandHandler,
-		systemService:  systemService,
-		dockerService:  dockerService,
-		amneziaService: amneziaService,
-		workerPool:     workerPool,
+		api:               api,
+		config:            cfg,
+		commandHandler:    commandHandler,
+		systemService:     systemService,
+		dockerService:     dockerService,
+		amneziaService:    amneziaService,
+		workerPool:        workerPool,
 		passwordRequester: passwordRequester,
 	}, nil
 }
@@ -88,7 +88,6 @@ func (b *Bot) Start() error {
 				continue
 			}
 
-
 			// Обработка команд
 			b.commandHandler.HandleCommand(update)
 		} else if update.CallbackQuery != nil {
@@ -96,7 +95,6 @@ func (b *Bot) Start() error {
 			if !b.isAuthorized(update.CallbackQuery.Message.Chat.ID) {
 				continue
 			}
-
 
 			// Обработка callback запросов
 			b.handleCallback(update)

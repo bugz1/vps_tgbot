@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	
+
 	"tgbot/internal/services/amnezia"
 )
 
@@ -31,27 +31,27 @@ func FormatWireGuardClients(clients []amnezia.WireGuardClient) string {
 // FormatWireGuardClientDetails форматирует детальную информацию о клиенте WireGuard
 func FormatWireGuardClientDetails(client amnezia.WireGuardClient) string {
 	var details strings.Builder
-	
+
 	details.WriteString(fmt.Sprintf("Имя: %s\n", client.Name))
 	details.WriteString(fmt.Sprintf("PublicKey: %s\n", client.PublicKey))
-	
+
 	if client.DataReceived != "" {
 		details.WriteString(fmt.Sprintf("Получено: %s\n", client.DataReceived))
 	}
-	
+
 	if client.DataSent != "" {
 		details.WriteString(fmt.Sprintf("Отправлено: %s\n", client.DataSent))
 	}
-	
+
 	if client.LatestHandshake != "" {
 		details.WriteString(fmt.Sprintf("Последнее подключение: %s\n", client.LatestHandshake))
 	}
-	
+
 	status := "Неактивен"
 	if client.Active {
 		status = "Активен"
 	}
 	details.WriteString(fmt.Sprintf("Статус: %s\n", status))
-	
+
 	return details.String()
 }

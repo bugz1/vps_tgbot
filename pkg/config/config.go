@@ -12,6 +12,8 @@ type Config struct {
 	CmdRunner  CmdRunnerConfig  `mapstructure:"cmdrunner"`
 	WorkerPool WorkerPoolConfig `mapstructure:"workerpool"`
 	Amnezia    AmneziaConfig    `mapstructure:"amnezia"`
+	// LogLevel задаёт глобальный уровень логирования (debug, info, warn, error)
+	LogLevel string `mapstructure:"log_level"`
 }
 
 // WorkerPoolConfig конфигурация worker pool
@@ -57,14 +59,14 @@ type DockerConfig struct {
 
 // AmneziaConfig конфигурация Amnezia VPN
 type AmneziaConfig struct {
-	Hostname           string            `mapstructure:"hostname"`
-	Port               int               `mapstructure:"port"`
-	ServerPubKey       string            `mapstructure:"server_pub_key"`
-	MTU                string            `mapstructure:"mtu"`
-	PersistentKeepalive string           `mapstructure:"persistent_keepalive"`
-	DNS1               string            `mapstructure:"dns1"`
-	DNS2               string            `mapstructure:"dns2"`
-	Obfuscation        ObfuscationConfig `mapstructure:"obfuscation"`
+	Hostname            string            `mapstructure:"hostname"`
+	Port                int               `mapstructure:"port"`
+	ServerPubKey        string            `mapstructure:"server_pub_key"`
+	MTU                 string            `mapstructure:"mtu"`
+	PersistentKeepalive string            `mapstructure:"persistent_keepalive"`
+	DNS1                string            `mapstructure:"dns1"`
+	DNS2                string            `mapstructure:"dns2"`
+	Obfuscation         ObfuscationConfig `mapstructure:"obfuscation"`
 }
 
 // ObfuscationConfig параметры obfuscation для Amnezia VPN

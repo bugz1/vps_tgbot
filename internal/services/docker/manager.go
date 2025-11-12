@@ -14,8 +14,8 @@ import (
 type Manager struct {
 	socket         string
 	timeoutSeconds int
-	bin string
-	commandPrefix []string
+	bin            string
+	commandPrefix  []string
 }
 
 // Container структура контейнера
@@ -41,8 +41,8 @@ func NewManager(socket string, timeoutSeconds int, bin string, commandPrefix []s
 	m := &Manager{
 		socket:         socket,
 		timeoutSeconds: timeoutSeconds,
-		bin:             bin,
-		commandPrefix:   commandPrefix,
+		bin:            bin,
+		commandPrefix:  commandPrefix,
 	}
 
 	// Небольшая проверка доступности Docker (не фатальная), с таймаутом
@@ -50,8 +50,8 @@ func NewManager(socket string, timeoutSeconds int, bin string, commandPrefix []s
 	defer cancel()
 	parts := []string{"sudo", m.bin, "info"}
 	opts := cmdrunner.RunOptions{
-		Timeout: 10 * time.Second,
-		Attempts: 1,
+		Timeout:            10 * time.Second,
+		Attempts:           1,
 		PasswordFromConfig: true,
 	}
 	if out, err := cmdrunner.RunWithRetries(ctx, parts, opts); err != nil {
@@ -104,8 +104,8 @@ func (m *Manager) runDockerParts(parts []string, timeout time.Duration, attempts
 	}
 
 	opts := cmdrunner.RunOptions{
-		Timeout: timeout,
-		Attempts: attempts,
+		Timeout:            timeout,
+		Attempts:           attempts,
 		PasswordFromConfig: true,
 	}
 	out, err := cmdrunner.RunWithRetries(context.Background(), parts, opts)
@@ -300,8 +300,8 @@ func (m *Manager) ExecuteCommandInContainer(containerName string, command ...str
 	attempts := 3
 
 	opts := cmdrunner.RunOptions{
-		Timeout: timeout,
-		Attempts: attempts,
+		Timeout:            timeout,
+		Attempts:           attempts,
 		PasswordFromConfig: true,
 	}
 	out, err := cmdrunner.RunWithRetries(context.Background(), parts, opts)

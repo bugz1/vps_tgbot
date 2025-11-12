@@ -10,10 +10,10 @@ import (
 
 // Requester структура для запроса пароля через Telegram
 type Requester struct {
-	bot       *tgbotapi.BotAPI
-	chatID    int64
-	password  string
-	passwordMu sync.Mutex
+	bot           *tgbotapi.BotAPI
+	chatID        int64
+	password      string
+	passwordMu    sync.Mutex
 	passwordReady chan struct{}
 }
 
@@ -53,11 +53,11 @@ func (r *Requester) SetPassword(chatID int64, password string) {
 	if r.chatID != chatID {
 		return
 	}
-	
+
 	r.passwordMu.Lock()
 	r.password = password
 	r.passwordMu.Unlock()
-	
+
 	// Сигнализируем, что пароль готов
 	select {
 	case r.passwordReady <- struct{}{}:

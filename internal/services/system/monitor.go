@@ -201,8 +201,8 @@ func (m *Monitor) Reboot() error {
 	defer cancel()
 	parts := []string{"sudo", "reboot"}
 	opts := cmdrunner.RunOptions{
-		Timeout: 10 * time.Second,
-		Attempts: 1,
+		Timeout:            10 * time.Second,
+		Attempts:           1,
 		PasswordFromConfig: true,
 	}
 	if _, err := cmdrunner.RunWithRetries(ctx, parts, opts); err != nil {
@@ -217,8 +217,8 @@ func (m *Monitor) Shutdown() error {
 	defer cancel()
 	parts := []string{"sudo", "shutdown", "-h", "now"}
 	opts := cmdrunner.RunOptions{
-		Timeout: 10 * time.Second,
-		Attempts: 1,
+		Timeout:            10 * time.Second,
+		Attempts:           1,
 		PasswordFromConfig: true,
 	}
 	if _, err := cmdrunner.RunWithRetries(ctx, parts, opts); err != nil {
@@ -236,8 +236,8 @@ func (m *Monitor) CheckUpdates() (string, error) {
 	// apt update
 	parts := []string{"sudo", "apt", "update"}
 	opts := cmdrunner.RunOptions{
-		Timeout: 2 * time.Minute,
-		Attempts: 1,
+		Timeout:            2 * time.Minute,
+		Attempts:           1,
 		PasswordFromConfig: true,
 	}
 	if _, err := cmdrunner.RunWithRetries(ctx, parts, opts); err != nil {
@@ -261,8 +261,8 @@ func (m *Monitor) UpgradeSystem() error {
 	defer cancel()
 	parts := []string{"sudo", "apt", "upgrade", "-y"}
 	opts := cmdrunner.RunOptions{
-		Timeout: 10 * time.Minute,
-		Attempts: 1,
+		Timeout:            10 * time.Minute,
+		Attempts:           1,
 		PasswordFromConfig: true,
 	}
 	if _, err := cmdrunner.RunWithRetries(ctx, parts, opts); err != nil {
@@ -346,8 +346,8 @@ func (m *Monitor) GetServices() ([]ServiceStatus, error) {
 func (m *Monitor) getServicesFallback() ([]ServiceStatus, error) {
 	parts := []string{"sudo", "systemctl", "list-units", "--type=service", "--no-pager"}
 	opts := cmdrunner.RunOptions{
-		Timeout: 30 * time.Second,
-		Attempts: 1,
+		Timeout:            30 * time.Second,
+		Attempts:           1,
 		PasswordFromConfig: true,
 	}
 	out, err := cmdrunner.RunWithRetries(context.Background(), parts, opts)
@@ -442,8 +442,8 @@ func (m *Monitor) GetServiceStatus(serviceName string) (ServiceStatus, error) {
 func (m *Monitor) getServiceStatusFallback(serviceName string) (ServiceStatus, error) {
 	parts := []string{"sudo", "systemctl", "is-active", serviceName + ".service"}
 	opts := cmdrunner.RunOptions{
-		Timeout: 10 * time.Second,
-		Attempts: 1,
+		Timeout:            10 * time.Second,
+		Attempts:           1,
 		PasswordFromConfig: true,
 	}
 	out, err := cmdrunner.RunWithRetries(context.Background(), parts, opts)

@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 	"time"
-	
+
 	"tgbot/pkg/logger"
 )
 
@@ -35,18 +35,18 @@ type WorkerPool struct {
 // New создает новый worker pool с указанным количеством воркеров
 func New(workersCount int) *WorkerPool {
 	ctx, cancel := context.WithCancel(context.Background())
-	
+
 	wp := &WorkerPool{
 		workersCount: workersCount,
-		taskQueue:    make(chan Task, 100), // Буферизованный канал для задач
+		taskQueue:    make(chan Task, 100),   // Буферизованный канал для задач
 		resultQueue:  make(chan Result, 100), // Буферизованный канал для результатов
 		ctx:          ctx,
 		cancel:       cancel,
 	}
-	
+
 	// Запускаем воркеры
 	wp.startWorkers()
-	
+
 	return wp
 }
 
@@ -61,16 +61,16 @@ func (wp *WorkerPool) startWorkers() {
 // worker выполняет задачи из очереди
 func (wp *WorkerPool) worker() {
 	defer wp.wg.Done()
-	
+
 	for {
 		select {
 		case task := <-wp.taskQueue:
 			// Создаем контекст с таймаутом для задачи
 			ctx, cancel := context.WithTimeout(wp.ctx, task.Timeout)
-			
+
 			// Канал для получения результата задачи
 			resultChan := make(chan Result, 1)
-			
+
 			// Выполняем задачу в отдельной goroutine
 			go func() {
 				value, err := task.Handler()
@@ -80,7 +80,7 @@ func (wp *WorkerPool) worker() {
 					Error: err,
 				}
 			}()
-			
+
 			// Ждем результат или таймаут
 			select {
 			case result := <-resultChan:
